@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { motion } from 'motion/react';
+import { motion } from 'framer-motion';
 import { Play, Pause, SkipBack, SkipForward, RotateCcw, List } from 'lucide-react';
 import { CubeState } from '../lib/cubeUtils';
 

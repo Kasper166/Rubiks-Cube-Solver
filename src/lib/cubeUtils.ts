@@ -22,7 +22,7 @@ export const FACE_LABELS: Record<FaceName, string> = {
   B: 'Back (Blue Center)',
 };
 
-export interface CubeState {
+export type CubeState = {
   [face in FaceName]: CubeColor[][];
 }
 

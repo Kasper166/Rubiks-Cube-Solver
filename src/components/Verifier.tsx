@@ -1,24 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { motion } from 'motion/react';
+import { motion } from 'framer-motion';
 import { Edit2, Check, AlertCircle, Palette, RefreshCw } from 'lucide-react';
 import { CubeState, CubeColor, COLOR_MAP, validateCubeState, ValidationResult, cubeStateToDefinition } from '../lib/cubeUtils';
 
 // Import and register the twisty-player custom element
 import 'cubing/twisty';
 
-declare global {
-    namespace JSX {
-        interface IntrinsicElements {
-            'twisty-player': React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement> & {
-                'alg'?: string;
-                'puzzle'?: string;
-                'visualization'?: string;
-                'control-panel'?: string;
-                'experimental-stickering'?: string;
-            };
-        }
-    }
-}
+
 
 interface VerifierProps {
   initialState: CubeState;
