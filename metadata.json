@@ -1,0 +1,5 @@
+{
+  "name": "Rubik's Master Solver",
+  "description": "A production-grade Rubik's Cube solver with camera scanning, 3D verification, and animated solutions.",
+  "requestFramePermissions": ["camera"]
+}
