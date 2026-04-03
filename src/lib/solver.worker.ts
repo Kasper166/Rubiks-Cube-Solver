@@ -1,4 +1,4 @@
-import { solve } from 'cubing/search';
+import { experimentalSolveTwips as solve } from 'cubing/search';
 import { cubeStateToDefinition } from './cubeUtils';
 
 self.onmessage = async (e) => {
