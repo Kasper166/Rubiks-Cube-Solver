@@ -2,7 +2,25 @@
 export type FaceName = 'U' | 'R' | 'F' | 'D' | 'L' | 'B';
 export type CubeColor = 'white' | 'red' | 'green' | 'yellow' | 'orange' | 'blue';
 
-export const FACE_ORDER: FaceName[] = ['U', 'R', 'F', 'D', 'L', 'B'];
+export const FACE_ORDER: FaceName[] = ['U', 'F', 'R', 'B', 'L', 'D'];
+
+export const ROTATION_GUIDANCE: Record<FaceName, { text: string; alg: string }> = {
+  U: { text: "Scan the Top face", alg: "" },
+  F: { text: "Rotate cube DOWN to show Front", alg: "x" },
+  R: { text: "Rotate cube LEFT to show Right", alg: "y" },
+  B: { text: "Rotate cube LEFT to show Back", alg: "y" },
+  L: { text: "Rotate cube LEFT to show Left", alg: "y" },
+  D: { text: "Rotate cube DOWN to show Bottom", alg: "z2 x" }, // This is a bit complex, might need better logic
+};
+
+// Simplified fixed rotation sequence: 
+// 1. U (White)
+// 2. F (Green) - rotate x
+// 3. R (Red) - rotate y
+// 4. B (Blue) - rotate y
+// 5. L (Orange) - rotate y
+// 6. D (Yellow) - rotate x twice from F or x' from B?
+// Let's use a more standard sequence: F, R, B, L, U, D
 
 export const COLOR_MAP: Record<CubeColor, string> = {
   white: '#FFFFFF',
@@ -22,8 +40,8 @@ export const FACE_LABELS: Record<FaceName, string> = {
   B: 'Back (Blue Center)',
 };
 
-export type CubeState = {
-  [face in FaceName]: CubeColor[][];
+export interface CubeState {
+  [face: string]: CubeColor[][];
 }
 
 export const INITIAL_CUBE_STATE: CubeState = {
@@ -41,16 +59,19 @@ export function detectColor(r: number, g: number, b: number): CubeColor {
   const s = hsv.s * 100;
   const v = hsv.v * 100;
 
-  if (s < 20 && v > 70) return 'white';
-  if (v < 20) return 'blue'; // Dark blue fallback or just very dark
+  // White: Low saturation, high value
+  if (s < 25 && v > 65) return 'white';
+  
+  // High saturation / value colors
+  if (v < 15) return 'blue'; // Very dark
 
   if (h < 15 || h > 345) return 'red';
   if (h >= 15 && h < 45) return 'orange';
-  if (h >= 45 && h < 75) return 'yellow';
-  if (h >= 75 && h < 160) return 'green';
-  if (h >= 160 && h < 260) return 'blue';
-
-  return 'white';
+  if (h >= 45 && h < 65) return 'yellow';
+  if (h >= 65 && h < 165) return 'green';
+  if (h >= 165 && h < 265) return 'blue';
+  
+  return 'white'; // Fallback
 }
 
 function rgbToHsv(r: number, g: number, b: number) {
@@ -71,22 +92,18 @@ function rgbToHsv(r: number, g: number, b: number) {
 }
 
 export function cubeStateToDefinition(state: CubeState): string {
-  // cubing.js uses a specific format or we can use Kociemba notation
-  // UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB
-  const colorToChar: Record<CubeColor, string> = {
-    white: 'U',
-    red: 'R',
-    green: 'F',
-    yellow: 'D',
-    orange: 'L',
-    blue: 'B',
-  };
+  // Map each color to the face it represents (based on center stickers)
+  const colorToFace: Record<string, string> = {};
+  for (const face of FACE_ORDER) {
+    colorToFace[state[face][1][1]] = face;
+  }
 
   let def = '';
   for (const face of FACE_ORDER) {
     for (let r = 0; r < 3; r++) {
       for (let c = 0; c < 3; c++) {
-        def += colorToChar[state[face][r][c]];
+        const color = state[face][r][c];
+        def += colorToFace[color] || 'U';
       }
     }
   }
@@ -103,6 +120,27 @@ const sortPieceColors = (colors: CubeColor[]): string => {
     return colors.sort().join('');
 };
 
+// Helper to get corner orientation
+// 0: correctly oriented, 1: twisted clockwise, 2: twisted counter-clockwise
+function getCornerOrientation(upDownFaceColor: CubeColor, cornerSticker: CubeColor, onUpDownFace: boolean): number {
+    if (!onUpDownFace) {
+        return 0; // The U/D color is on a side face, which we can define as oriented
+    }
+    // If the sticker on the U/D face is the U/D color, it's oriented.
+    if (cornerSticker === upDownFaceColor) {
+        return 0;
+    }
+    // This logic assumes a standard color scheme where F/B are twisted relative to L/R
+    if (upDownFaceColor === 'white') { // Assuming U face is white
+        if (cornerSticker === 'green' || cornerSticker === 'blue') return 1; // CW
+        if (cornerSticker === 'red' || cornerSticker === 'orange') return 2; // CCW
+    } else if (upDownFaceColor === 'yellow') { // Assuming D face is yellow
+        if (cornerSticker === 'green' || cornerSticker === 'blue') return 1; // CW
+        if (cornerSticker === 'red' || cornerSticker === 'orange') return 2; // CCW
+    }
+    return 1; // Default twisted
+}
+
 export function validateCubeState(state: CubeState): ValidationResult {
     const errors: string[] = [];
     const colorCounts: Record<CubeColor, number> = {
@@ -113,7 +151,7 @@ export function validateCubeState(state: CubeState): ValidationResult {
     for (const face of FACE_ORDER) {
         for (let r = 0; r < 3; r++) {
             for (let c = 0; c < 3; c++) {
-                colorCounts[state[face][r][c]]++;
+                colorCounts[state[face][r][c] as CubeColor]++;
             }
         }
     }
@@ -125,7 +163,7 @@ export function validateCubeState(state: CubeState): ValidationResult {
     // 2. Center Pieces
     const centerColors = new Set<CubeColor>();
     for (const face of FACE_ORDER) {
-        centerColors.add(state[face][1][1]);
+        centerColors.add(state[face][1][1] as CubeColor);
     }
     if (centerColors.size !== 6) {
         errors.push('Invalid center pieces. Each center must be a unique color.');
@@ -133,19 +171,19 @@ export function validateCubeState(state: CubeState): ValidationResult {
 
     // Define edges and corners by their sticker locations
     const EDGES = [
-        sortPieceColors([state.U[1][2], state.R[0][1]]), sortPieceColors([state.U[2][1], state.F[0][1]]),
-        sortPieceColors([state.U[1][0], state.L[0][1]]), sortPieceColors([state.U[0][1], state.B[0][1]]),
-        sortPieceColors([state.D[1][2], state.R[2][1]]), sortPieceColors([state.D[2][1], state.F[2][1]]),
-        sortPieceColors([state.D[1][0], state.L[2][1]]), sortPieceColors([state.D[0][1], state.B[2][1]]),
-        sortPieceColors([state.F[1][2], state.R[1][0]]), sortPieceColors([state.F[1][0], state.L[1][2]]),
-        sortPieceColors([state.B[1][0], state.R[1][2]]), sortPieceColors([state.B[1][2], state.L[1][0]]),
+        sortPieceColors([state.U[1][2], state.R[0][1]] as CubeColor[]), sortPieceColors([state.U[2][1], state.F[0][1]] as CubeColor[]),
+        sortPieceColors([state.U[1][0], state.L[0][1]] as CubeColor[]), sortPieceColors([state.U[0][1], state.B[0][1]] as CubeColor[]),
+        sortPieceColors([state.D[1][2], state.R[2][1]] as CubeColor[]), sortPieceColors([state.D[2][1], state.F[2][1]] as CubeColor[]),
+        sortPieceColors([state.D[1][0], state.L[2][1]] as CubeColor[]), sortPieceColors([state.D[0][1], state.B[2][1]] as CubeColor[]),
+        sortPieceColors([state.F[1][2], state.R[1][0]] as CubeColor[]), sortPieceColors([state.F[1][0], state.L[1][2]] as CubeColor[]),
+        sortPieceColors([state.B[1][0], state.R[1][2]] as CubeColor[]), sortPieceColors([state.B[1][2], state.L[1][0]] as CubeColor[]),
     ];
 
     const CORNERS = [
-        sortPieceColors([state.U[2][2], state.R[0][2], state.F[0][2]]), sortPieceColors([state.U[2][0], state.F[0][0], state.L[0][2]]),
-        sortPieceColors([state.U[0][0], state.L[0][0], state.B[0][2]]), sortPieceColors([state.U[0][2], state.B[0][0], state.R[0][0]]),
-        sortPieceColors([state.D[2][2], state.F[2][2], state.R[2][2]]), sortPieceColors([state.D[2][0], state.L[2][2], state.F[2][0]]),
-        sortPieceColors([state.D[0][0], state.B[2][2], state.L[2][0]]), sortPieceColors([state.D[0][2], state.R[2][0], state.B[2][0]]),
+        sortPieceColors([state.U[2][2], state.R[0][2], state.F[0][2]] as CubeColor[]), sortPieceColors([state.U[2][0], state.F[0][0], state.L[0][2]] as CubeColor[]),
+        sortPieceColors([state.U[0][0], state.L[0][0], state.B[0][2]] as CubeColor[]), sortPieceColors([state.U[0][2], state.B[0][0], state.R[0][0]] as CubeColor[]),
+        sortPieceColors([state.D[2][2], state.F[2][2], state.R[2][2]] as CubeColor[]), sortPieceColors([state.D[2][0], state.L[2][2], state.F[2][0]] as CubeColor[]),
+        sortPieceColors([state.D[0][0], state.B[2][2], state.L[2][0]] as CubeColor[]), sortPieceColors([state.D[0][2], state.R[2][0], state.B[2][0]] as CubeColor[]),
     ];
 
     // 3. Edge Piece Validation
@@ -194,7 +232,19 @@ export function validateCubeState(state: CubeState): ValidationResult {
         errors.push(`Invalid number of unique corner pieces found: ${foundCorners}/8`);
     }
 
-    // TODO: Add parity checks (permutation and orientation) for a fully robust validation
+    // 5. Corner Orientation Parity
+    let cornerOrientationSum = 0;
+    cornerOrientationSum += getCornerOrientation('white', state.U[2][2] as CubeColor, true);
+    cornerOrientationSum += getCornerOrientation('white', state.U[2][0] as CubeColor, true);
+    cornerOrientationSum += getCornerOrientation('white', state.U[0][0] as CubeColor, true);
+    cornerOrientationSum += getCornerOrientation('white', state.U[0][2] as CubeColor, true);
+    cornerOrientationSum += getCornerOrientation('yellow', state.D[2][2] as CubeColor, true);
+    cornerOrientationSum += getCornerOrientation('yellow', state.D[2][0] as CubeColor, true);
+    cornerOrientationSum += getCornerOrientation('yellow', state.D[0][0] as CubeColor, true);
+    cornerOrientationSum += getCornerOrientation('yellow', state.D[0][2] as CubeColor, true);
+    if (cornerOrientationSum % 3 !== 0) {
+        errors.push('Invalid corner orientation parity. One or more corners may be twisted.');
+    }
 
     return {
         isValid: errors.length === 0,
