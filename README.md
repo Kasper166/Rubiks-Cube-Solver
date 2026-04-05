@@ -1,4 +1,4 @@
-# Rubik's Cube Solver
+# Rubik's Cube Solver (Work in progress)
 
 ## Description
 This project is a web-based Rubik's Cube solver application built with React, Vite, and Tailwind CSS. It leverages the `cubing.js` library for Rubik's Cube logic and `framer-motion` for animations, providing an interactive and visually appealing user experience.
