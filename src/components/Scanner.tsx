@@ -56,7 +56,7 @@ export default function Scanner({ onComplete }: ScannerProps) {
     return result;
   }, [scannedState]);
 
-  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
   
   // Toggle camera
   const flipCamera = useCallback(() => {
@@ -193,18 +193,27 @@ export default function Scanner({ onComplete }: ScannerProps) {
             </div>
           </div>
           <div className="flex gap-2">
-            {FACE_ORDER.map((_, i) => (
-              <div
-                key={i}
-                className={`w-2 h-2 rounded-full transition-all duration-300 ${
-                  i === currentFaceIndex
-                    ? 'bg-white scale-125'
-                    : i < currentFaceIndex
-                    ? 'bg-white/40'
-                    : 'bg-white/10'
-                }`}
-              />
-            ))}
+            <button
+              onClick={flipCamera}
+              className="p-2 bg-white/10 hover:bg-white/20 rounded-xl transition-colors"
+              title="Flip Camera"
+            >
+              <RotateCw className="w-4 h-4 text-white" />
+            </button>
+            <div className="flex items-center gap-2">
+              {FACE_ORDER.map((_, i) => (
+                <div
+                  key={i}
+                  className={`w-2 h-2 rounded-full transition-all duration-300 ${
+                    i === currentFaceIndex
+                      ? 'bg-white scale-125'
+                      : i < currentFaceIndex
+                      ? 'bg-white/40'
+                      : 'bg-white/10'
+                  }`}
+                />
+              ))}
+            </div>
           </div>
         </div>
 
@@ -215,7 +224,7 @@ export default function Scanner({ onComplete }: ScannerProps) {
             autoPlay
             playsInline
             muted
-            className="w-full h-full object-cover scale-x-[-1]"
+            className={`w-full h-full object-cover ${facingMode === 'user' ? 'scale-x-[-1]' : ''}`}
           />
           <canvas ref={canvasRef} className="hidden" />
 
