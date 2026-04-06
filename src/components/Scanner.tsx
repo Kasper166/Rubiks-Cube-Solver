@@ -40,7 +40,16 @@ export default function Scanner({ onComplete }: ScannerProps) {
   const [realTimeColors, setRealTimeColors] = useState<CubeColor[][]>(
     Array(3).fill(null).map(() => Array(3).fill('white'))
   );
+  const [manualOverrides, setManualOverrides] = useState<(CubeColor | null)[][]>(
+    Array(3).fill(null).map(() => Array(3).fill(null))
+  );
   const [glare, setGlare] = useState<GlareResult | null>(null);
+  const [showIntro, setShowIntro] = useState(true);
+  
+  // Auto-capture states
+  const [lastFingerprint, setLastFingerprint] = useState("");
+  const [stabilityStart, setStabilityStart] = useState<number | null>(null);
+  const [lastCapturedFace, setLastCapturedFace] = useState<FaceName | null>(null);
 
   const currentFace = FACE_ORDER[currentFaceIndex];
   const guidance = ROTATION_GUIDANCE[currentFace];
@@ -121,15 +130,27 @@ export default function Scanner({ onComplete }: ScannerProps) {
           setGlare(glareResult);
 
           // Color detection per grid cell
-          const gridColors: CubeColor[][] = [];
-          const boxSize = canvas.width / 3;
+          // We align the 3x3 sampling grid with a 256x256 theoretical guide 
+          // centered in the 300x300 processing canvas.
+          // Guide bounds: 22 to 278 (assuming centered)
+          const guideSize = 256;
+          const offset = (canvas.width - guideSize) / 2; // ~22
+          const boxSize = guideSize / 3; // ~85.33
 
+          const gridColors: CubeColor[][] = [];
           for (let r = 0; r < 3; r++) {
             const row: CubeColor[] = [];
             for (let c = 0; c < 3; c++) {
-              const x = c * boxSize + boxSize / 2;
-              const y = r * boxSize + boxSize / 2;
-              const data = ctx.getImageData(x - 8, y - 8, 16, 16).data;
+              // If manually overridden, use that color
+              if (manualOverrides[r][c]) {
+                row.push(manualOverrides[r][c]!);
+                continue;
+              }
+
+              const x = offset + c * boxSize + boxSize / 2;
+              const y = offset + r * boxSize + boxSize / 2;
+              const sampleSize = 12; // Slightly smaller sample for better precision
+              const data = ctx.getImageData(x - sampleSize/2, y - sampleSize/2, sampleSize, sampleSize).data;
 
               let red = 0, g = 0, b = 0;
               for (let i = 0; i < data.length; i += 4) {
@@ -141,6 +162,22 @@ export default function Scanner({ onComplete }: ScannerProps) {
             gridColors.push(row);
           }
           setRealTimeColors(gridColors);
+
+          // Auto-capture detection
+          const fingerprint = gridColors.flat().join("");
+          if (fingerprint !== lastFingerprint) {
+            setLastFingerprint(fingerprint);
+            setStabilityStart(Date.now());
+          } else if (stabilityStart && Date.now() - stabilityStart > 1200) {
+            // Stable for 1.2s - check if it's a new face
+            if (currentFace !== lastCapturedFace) {
+               // We trigger capture only if the colors are diverse enough
+               const uniqueColors = new Set(gridColors.flat()).size;
+               if (uniqueColors >= 2) {
+                 captureFace();
+               }
+            }
+          }
         }
       }
       animationFrame = requestAnimationFrame(detect);
@@ -151,10 +188,14 @@ export default function Scanner({ onComplete }: ScannerProps) {
 
   const captureFace = useCallback(() => {
     Haptic.medium();
+    const finalColors = JSON.parse(JSON.stringify(realTimeColors));
     setScannedState(prev => ({
       ...prev,
-      [currentFace]: JSON.parse(JSON.stringify(realTimeColors)),
+      [currentFace]: finalColors,
     }));
+    setLastCapturedFace(currentFace);
+    setManualOverrides(Array(3).fill(null).map(() => Array(3).fill(null)));
+    
     if (currentFaceIndex < 5) {
       setCurrentFaceIndex(i => i + 1);
     }
@@ -163,6 +204,12 @@ export default function Scanner({ onComplete }: ScannerProps) {
   const handleOverlayChange = useCallback(
     (row: number, col: number, colorLabel: string) => {
       Haptic.light();
+      setManualOverrides(prev => {
+        const next = prev.map(r => [...r]);
+        next[row][col] = colorLabel as CubeColor;
+        return next;
+      });
+      // Also update real-time colors immediately for feedback
       setRealTimeColors(prev => {
         const next = prev.map(r => [...r]);
         next[row][col] = colorLabel as CubeColor;
@@ -242,6 +289,13 @@ export default function Scanner({ onComplete }: ScannerProps) {
               <div className="absolute top-2/3 left-0 right-0 h-px bg-white/15" />
             </div>
           </div>
+
+          {/* Rotation Arrow */}
+          <AnimatePresence>
+            {!showIntro && currentFaceIndex > 0 && stabilityStart && (Date.now() - stabilityStart < 3000) && (
+              <RotationArrow alg={guidance.alg} />
+            )}
+          </AnimatePresence>
 
           {/* Glare Warning */}
           <AnimatePresence>
@@ -360,6 +414,68 @@ export default function Scanner({ onComplete }: ScannerProps) {
           </div>
         </div>
       </div>
+
+      {/* Intro Overlay */}
+      <AnimatePresence>
+        {showIntro && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-50 bg-zinc-950/90 backdrop-blur-md flex flex-col items-center justify-center p-8 text-center"
+          >
+            <motion.div
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              className="max-w-sm"
+            >
+              <div className="w-20 h-20 bg-blue-500/20 rounded-3xl flex items-center justify-center mb-6 mx-auto">
+                <Camera className="w-10 h-10 text-blue-400" />
+              </div>
+              <h2 className="text-2xl font-heading font-bold mb-3">Scanning Guide</h2>
+              <p className="text-zinc-400 mb-8">
+                Place your Rubik's Cube flat on a stable surface. Ensure good lighting and avoid reflections for the best color accuracy.
+              </p>
+              <button
+                onClick={() => setShowIntro(false)}
+                className="btn-primary w-full py-4 text-lg font-bold shadow-xl shadow-blue-500/20"
+              >
+                Got it, Start Scanning
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
+  );
+}
+
+function RotationArrow({ alg }: { alg: string }) {
+  if (!alg) return null;
+
+  let rotationClass = "";
+  let icon = <ArrowRight className="w-12 h-12" />;
+
+  if (alg.includes('x')) {
+    rotationClass = "-rotate-90"; // Down/Up
+  } else if (alg.includes('y')) {
+    rotationClass = "rotate-0"; // Side
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.5 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className={`absolute inset-0 flex items-center justify-center pointer-events-none z-30`}
+    >
+      <div className={`p-6 rounded-full bg-white/10 backdrop-blur-md border border-white/20 shadow-2xl ${rotationClass}`}>
+        <motion.div
+          animate={{ x: [0, 15, 0] }}
+          transition={{ repeat: Infinity, duration: 1.5 }}
+        >
+          {icon}
+        </motion.div>
+      </div>
+    </motion.div>
   );
 }

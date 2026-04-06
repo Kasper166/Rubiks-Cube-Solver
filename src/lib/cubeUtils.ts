@@ -1,3 +1,5 @@
+import { KPattern } from 'cubing/kpuzzle';
+import { cube3x3x3 } from 'cubing/puzzles';
 
 export type FaceName = 'U' | 'R' | 'F' | 'D' | 'L' | 'B';
 export type CubeColor = 'white' | 'red' | 'green' | 'yellow' | 'orange' | 'blue';
@@ -110,6 +112,87 @@ export function cubeStateToDefinition(state: CubeState): string {
     }
   }
   return def;
+}
+
+// Reid / Kociemba format piece mapping from cubing.js internals
+const reidEdgeOrder = "UF UR UB UL DF DR DB DL FR FL BR BL".split(" ");
+const reidCornerOrder = "UFR URB UBL ULF DRF DFL DLB DBR".split(" ");
+
+// Map from facelet index to [orbit, piece_at_position, sticker_index]
+const map: [number, number, number][] = [
+  [1, 2, 0], [0, 2, 0], [1, 1, 0], [0, 3, 0], [2, 0, 0], [0, 1, 0], [1, 3, 0], [0, 0, 0], [1, 0, 0],
+  [1, 0, 2], [0, 1, 1], [1, 1, 1], [0, 8, 1], [2, 3, 0], [0, 10, 1], [1, 4, 1], [0, 5, 1], [1, 7, 2],
+  [1, 3, 2], [0, 0, 1], [1, 0, 1], [0, 9, 0], [2, 2, 0], [0, 8, 0], [1, 5, 1], [0, 4, 1], [1, 4, 2],
+  [1, 5, 0], [0, 4, 0], [1, 4, 0], [0, 7, 0], [2, 5, 0], [0, 5, 0], [1, 6, 0], [0, 6, 0], [1, 7, 0],
+  [1, 2, 2], [0, 3, 1], [1, 3, 1], [0, 11, 1], [2, 1, 0], [0, 9, 1], [1, 6, 1], [0, 7, 1], [1, 5, 2],
+  [1, 1, 2], [0, 2, 1], [1, 2, 1], [0, 10, 0], [2, 4, 0], [0, 11, 0], [1, 7, 1], [0, 6, 1], [1, 6, 2]
+];
+
+function rotateLeft(s: string, i: number): string {
+  return s.slice(i) + s.slice(0, i);
+}
+
+/**
+ * Converts a 54-char Kociemba facelet string to a KPattern object.
+ * This is necessary because @cubing/search expects a KPattern, not a string.
+ */
+export async function faceletsToKPattern(facelets: string): Promise<KPattern> {
+    const k = await cube3x3x3.kpuzzle();
+    
+    // Create actual data structure
+    const data: any = {
+        EDGES: { pieces: new Array(12), orientation: new Array(12) },
+        CORNERS: { pieces: new Array(8), orientation: new Array(8) },
+        CENTERS: { pieces: [0, 1, 2, 3, 4, 5], orientation: [0, 0, 0, 0, 0, 0], orientationMod: [1, 1, 1, 1, 1, 1] }
+    };
+
+    // stickersByPiece[orbit][pos][stickerIndex] = color
+    const stickersByPiece: string[][][] = [
+        new Array(12).fill(0).map(() => new Array(2)),
+        new Array(8).fill(0).map(() => new Array(3)),
+        new Array(6).fill(0).map(() => new Array(1))
+    ];
+
+    for (let i = 0; i < 54; i++) {
+        const [orbit, perm, ori] = map[i];
+        stickersByPiece[orbit][perm][ori] = facelets[i];
+    }
+
+    // Solve Edges
+    for (let i = 0; i < 12; i++) {
+        const stickers = stickersByPiece[0][i].join("");
+        let found = false;
+        for (let p = 0; p < 12; p++) {
+            for (let o = 0; o < 2; o++) {
+                if (rotateLeft(reidEdgeOrder[p], o) === stickers) {
+                    data.EDGES.pieces[i] = p;
+                    data.EDGES.orientation[i] = o;
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+    }
+
+    // Solve Corners
+    for (let i = 0; i < 8; i++) {
+        const stickers = stickersByPiece[1][i].join("");
+        let found = false;
+        for (let p = 0; p < 8; p++) {
+            for (let o = 0; o < 3; o++) {
+                if (rotateLeft(reidCornerOrder[p], o) === stickers) {
+                    data.CORNERS.pieces[i] = p;
+                    data.CORNERS.orientation[i] = o;
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+    }
+
+    return new KPattern(k, data);
 }
 
 export interface ValidationResult {

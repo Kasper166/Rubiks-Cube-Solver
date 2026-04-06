@@ -2,11 +2,11 @@
  * Solver Worker — Phase 2/3 Orchestration Background logic.
  * 
  * This worker wraps the Kociemba algorithm from the cubing/search library.
- * It's used for standalone solve tasks outside of the multi-orientation pool.
+ * It's updated to correctly handle the @cubing/search API which expects a KPattern.
  */
 
 import { experimentalSolve3x3x3IgnoringCenters as solve } from 'cubing/search';
-import { cubeStateToDefinition, CubeState } from './cubeUtils';
+import { CubeState, cubeStateToDefinition, faceletsToKPattern } from './cubeUtils';
 
 const ctx: Worker = self as any;
 
@@ -14,13 +14,16 @@ ctx.onmessage = async (e: MessageEvent<{ cubeState: CubeState }>) => {
   const { cubeState } = e.data;
   
   try {
-    // Convert 2D color state to Kociemba facelet string
+    // 1. Convert 2D color state to facelet string
     const definition = cubeStateToDefinition(cubeState);
     
-    // Kociemba search is computationally expensive; run in background
-    console.log('Worker starting search for definition:', definition);
+    // 2. Convert facelet string to KPattern
+    console.log('Worker converting facelets to KPattern...');
+    const pattern = await faceletsToKPattern(definition);
     
-    const result = await solve(definition as any);
+    // 3. Solve using @cubing/search
+    console.log('Worker starting search...');
+    const result = await solve(pattern);
     const moves = result.toString().split(' ').filter(m => m.length > 0);
     
     ctx.postMessage({ 

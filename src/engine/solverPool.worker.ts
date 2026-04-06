@@ -6,6 +6,7 @@
  */
 
 import { experimentalSolve3x3x3IgnoringCenters as solve } from 'cubing/search';
+import { faceletsToKPattern } from '../lib/cubeUtils';
 
 const ctx: Worker = self as any;
 
@@ -13,7 +14,12 @@ ctx.onmessage = async (e) => {
   const { cubeDefinition, orientationIndex, taskId } = e.data;
 
   try {
-    const result = await solve(cubeDefinition as any);
+    // Convert facelet string to KPattern
+    const pattern = await faceletsToKPattern(cubeDefinition);
+
+    // TODO: Apply orientation rotation if needed (feature enhancement)
+    // For now, we fix the API crash by passing a KPattern
+    const result = await solve(pattern);
     const moves = result.toString().split(' ').filter((m: string) => m.length > 0);
     
     ctx.postMessage({
