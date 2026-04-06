@@ -178,7 +178,7 @@ export default function Scanner({ onComplete }: ScannerProps) {
   }, [scannedState, onComplete]);
 
   return (
-    <div className="flex flex-col lg:flex-row h-[calc(100vh-6rem)] gap-6 p-6 max-w-7xl mx-auto">
+    <div className="flex flex-col lg:flex-row min-h-screen lg:h-[calc(100vh-6rem)] gap-6 p-4 lg:p-6 max-w-7xl mx-auto">
       {/* ─── Camera Feed ─────────────────────────────── */}
       <div className="flex-1 relative glass-card overflow-hidden flex flex-col">
         {/* Header */}
@@ -218,7 +218,7 @@ export default function Scanner({ onComplete }: ScannerProps) {
         </div>
 
         {/* Video Area */}
-        <div className="relative flex-1 bg-black rounded-2xl overflow-hidden group">
+        <div className="relative flex-1 min-h-[350px] lg:min-h-0 bg-black rounded-2xl overflow-hidden group">
           <video
             ref={videoRef}
             autoPlay
@@ -323,8 +323,8 @@ export default function Scanner({ onComplete }: ScannerProps) {
         </div>
       </div>
 
-      {/* ─── 3D Preview Side Panel ──────────────────── */}
-      <div className="w-full lg:w-96 flex flex-col gap-6">
+      {/* ─── 3D Preview Side Panel (Hidden on mobile for better focus) ──────────────────── */}
+      <div className="hidden lg:flex w-full lg:w-96 flex-col gap-6">
         <div className="glass-card flex-1 flex flex-col items-center justify-center gap-6 text-center">
           <div className="w-full aspect-square relative rounded-2xl overflow-hidden">
             <CubeRenderer colors={cubeColors} autoRotate={true} />

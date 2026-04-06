@@ -114,7 +114,7 @@ export default function App() {
       </main>
 
       {/* ─── Footer Branding ───────────────────── */}
-      <footer className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 pointer-events-none">
+      <footer className="hidden sm:block fixed bottom-4 left-1/2 -translate-x-1/2 z-50 pointer-events-none">
         <p className="text-[10px] text-zinc-700 font-mono tracking-widest uppercase">
           Spectro-Cube • Parallel Processing Architecture
         </p>
