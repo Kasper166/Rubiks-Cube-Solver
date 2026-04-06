@@ -28,6 +28,14 @@ import CubeRenderer from './CubeRenderer';
 import ThinkBar from './ThinkBar';
 import type { ThreeCube } from '../engine/ThreeCube';
 
+const STEP_DURATION_MS = 600;
+
+const getInverseMove = (move: string) => {
+  if (move.endsWith("'")) return move.slice(0, -1);
+  if (move.endsWith("2")) return move;
+  return move + "'";
+};
+
 interface SolverProps {
   cubeState: CubeState;
   onReset: () => void;
@@ -43,7 +51,7 @@ export default function Solver({ cubeState, onReset }: SolverProps) {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [colorBlindMode, setColorBlindMode] = useState(false);
   const threeCubeRef = useRef<ThreeCube | null>(null);
-  const playIntervalRef = useRef<number | null>(null);
+  const isAnimatingRef = useRef(false);
 
   // Build initial hex color map for the 3D cube
   const initialColors = useMemo(() => {
@@ -71,56 +79,84 @@ export default function Solver({ cubeState, onReset }: SolverProps) {
 
   // ─── Playback Controls ────────────────────────
 
-  const playNextMove = useCallback(async () => {
-    if (!threeCubeRef.current || currentMoveIndex >= solution.length) {
+  // Auto-play effect
+  React.useEffect(() => {
+    if (!isPlaying) return;
+
+    if (currentMoveIndex >= solution.length || !threeCubeRef.current) {
       setIsPlaying(false);
       return;
     }
-    const move = solution[currentMoveIndex];
-    await threeCubeRef.current.executeMove(move, 0.35);
-    setCurrentMoveIndex(prev => prev + 1);
-    Haptic.light();
-  }, [currentMoveIndex, solution]);
+
+    let isCancelled = false;
+
+    const playStep = async () => {
+      if (isAnimatingRef.current) return;
+      isAnimatingRef.current = true;
+
+      // Small pause between moves for readability
+      await new Promise(resolve => setTimeout(resolve, STEP_DURATION_MS * 0.2));
+      
+      if (isCancelled || !threeCubeRef.current) {
+        isAnimatingRef.current = false;
+        return;
+      }
+
+      await threeCubeRef.current.executeMove(solution[currentMoveIndex], (STEP_DURATION_MS * 0.8) / 1000);
+      
+      isAnimatingRef.current = false;
+      if (!isCancelled) {
+        setCurrentMoveIndex(prev => prev + 1);
+        Haptic.light();
+      }
+    };
+
+    playStep();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [isPlaying, currentMoveIndex, solution]);
 
   const handlePlay = useCallback(() => {
-    if (currentMoveIndex >= solution.length) return;
-    setIsPlaying(true);
-
-    const run = async () => {
-      let idx = currentMoveIndex;
-      while (idx < solution.length && threeCubeRef.current) {
-        await threeCubeRef.current.executeMove(solution[idx], 0.35);
-        idx++;
-        setCurrentMoveIndex(idx);
-        Haptic.light();
-        await new Promise(r => setTimeout(r, 200));
-      }
-      setIsPlaying(false);
-    };
-    run();
-  }, [currentMoveIndex, solution]);
+    if (currentMoveIndex < solution.length) {
+      setIsPlaying(true);
+    }
+  }, [currentMoveIndex, solution.length]);
 
   const handlePause = useCallback(() => {
     setIsPlaying(false);
   }, []);
 
   const handleStepForward = useCallback(async () => {
-    if (!threeCubeRef.current || currentMoveIndex >= solution.length) return;
-    await threeCubeRef.current.executeMove(solution[currentMoveIndex], 0.35);
+    if (!threeCubeRef.current || currentMoveIndex >= solution.length || isAnimatingRef.current) return;
+    setIsPlaying(false); // Stop autoplay when manually stepping
+    isAnimatingRef.current = true;
+    
+    await threeCubeRef.current.executeMove(solution[currentMoveIndex], (STEP_DURATION_MS * 0.8) / 1000);
     setCurrentMoveIndex(prev => prev + 1);
+    
+    isAnimatingRef.current = false;
     Haptic.light();
   }, [currentMoveIndex, solution]);
 
-  const handleStepBack = useCallback(() => {
-    // Stepping back requires re-rendering the cube up to currentMoveIndex-1
-    // For simplicity, we reset and replay up to the new index
-    if (currentMoveIndex <= 0 || !threeCubeRef.current) return;
-    setCurrentMoveIndex(prev => Math.max(0, prev - 1));
-    // Note: true step-back would need inverse moves; simplified here
+  const handleStepBack = useCallback(async () => {
+    if (currentMoveIndex <= 0 || !threeCubeRef.current || isAnimatingRef.current) return;
+    setIsPlaying(false); // Stop autoplay when manually stepping
+    isAnimatingRef.current = true;
+    
+    const prevMove = solution[currentMoveIndex - 1];
+    const inverse = getInverseMove(prevMove);
+    
+    await threeCubeRef.current.executeMove(inverse, (STEP_DURATION_MS * 0.8) / 1000);
+    setCurrentMoveIndex(prev => prev - 1);
+    
+    isAnimatingRef.current = false;
     Haptic.light();
-  }, [currentMoveIndex]);
+  }, [currentMoveIndex, solution]);
 
   const handleResetPlayback = useCallback(() => {
+    setIsPlaying(false);
     setCurrentMoveIndex(0);
     // Re-mount cube renderer by forcing color reset
     if (threeCubeRef.current) {
