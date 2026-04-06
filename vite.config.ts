@@ -18,11 +18,13 @@ export default defineConfig(({mode}) => {
     },
     build: {
       target: 'esnext',
+      commonjsOptions: {
+        esmExternals: true,
+      },
       rollupOptions: {
         output: {
           manualChunks: {
             'vendor-react': ['react', 'react-dom', 'framer-motion'],
-            'vendor-cubing': ['cubing'],
             'vendor-three': ['three'],
           },
         },
@@ -33,9 +35,6 @@ export default defineConfig(({mode}) => {
     },
     worker: {
       format: 'es',
-    },
-    optimizeDeps: {
-      exclude: ['cubing'],
     },
   };
 });
