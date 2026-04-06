@@ -1,58 +1,80 @@
-# Rubik's Cube Solver (Work in progress)
+# 🧊 Spectro-Cube | Next-Gen AI Rubik's Cube Scanner & Solver
 
-## Description
-This project is a web-based Rubik's Cube solver application built with React, Vite, and Tailwind CSS. It leverages the `cubing.js` library for Rubik's Cube logic and `framer-motion` for animations, providing an interactive and visually appealing user experience.
+![Spectro-Cube Hero](https://github.com/Kasper166/Rubiks-Cube-Solver/blob/main/spectro_cube_hero_github.png?raw=true)
 
-The application aims to provide functionalities such as:
-- **Cube Scanning:** Allowing users to input the current state of their Rubik's Cube.
-- **Cube Solving:** Calculating and displaying the steps to solve the scanned cube.
-- **Solution Verification:** Verifying if a given cube state or sequence of moves leads to a solved cube.
+**Spectro-Cube** is a high-performance web application designed to bridge the gap between physical cubing and digital precision. Using advanced computer vision and the legendary Kociemba algorithm, it transforms your device into a professional-grade scanning and solving station.
 
-## Technologies Used
-- **React:** A JavaScript library for building user interfaces.
-- **Vite:** A fast build tool that provides a lightning-fast development experience.
-- **TypeScript:** A typed superset of JavaScript that compiles to plain JavaScript.
-- **Tailwind CSS:** A utility-first CSS framework for rapidly building custom designs.
-- **Cubing.js:** A comprehensive JavaScript library for Rubik's Cube related algorithms and data structures.
-- **Framer Motion:** A production-ready motion library for React.
+---
 
-## Getting Started
+## ⚡ Live Demo
+**👉 [Experience Spectro-Cube LIVE](https://Kasper166.github.io/Rubiks-Cube-Solver/)**
+
+---
+
+## 🚀 Key Features
+
+### 🔍 AI-Powered Scanning
+Real-time HSV-based color detection with automatic plane mapping. Includes glare detection, haptic feedback, and a live 3D preview that updates as you scan each face.
+
+### 🧠 Cinematic "Think Bar" Sequence
+A 20-second immersive orchestration that validates your cube's integrity and runs parallel Kociemba optimizations across multiple orientations to find the absolute shortest path.
+
+### 🎮 Move-by-Move Playback
+Interactive 3D visualization using a custom Three.js engine. Watch the solution in real-time or step through it manually with intuitive controls.
+
+### 🎭 Premium Aesthetics
+- **Dark Mode Architecture**: A sleek, deep-space aesthetic designed for focus.
+- **Glassmorphism**: Modern UI components with frosted-glass effects and smooth transitions.
+- **GSAP Orchestration**: Every interaction is buttery smooth, from phase transitions to the solver's "Think" sequence.
+
+---
+
+## 🛠️ Technology Stack
+
+- **Core**: [React 19](https://reactjs.org/) + [Vite 6](https://vitejs.dev/)
+- **3D Engine**: [Three.js](https://threejs.org/)
+- **Mathematics**: [cubing.js](https://cubing.js.org/) (Kociemba Search)
+- **Styling**: [Tailwind CSS v4](https://tailwindcss.com/)
+- **Animations**: [GSAP](https://greensock.com/gsap/) & [Framer Motion](https://www.framer.com/motion/)
+
+---
+
+## 📦 Getting Started
 
 ### Prerequisites
-- Node.js (LTS version recommended)
-- npm (Node Package Manager)
+- Node.js (v18+)
+- npm / pnpm
 
 ### Installation
 
-1.  **Clone the repository:**
-    ```bash
-    git clone <repository-url>
-    cd rubiks-cube-solver
-    ```
-    *(Note: Replace `<repository-url>` with the actual URL of your repository.)*
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/Kasper166/Rubiks-Cube-Solver.git
+   cd Rubiks-Cube-Solver
+   ```
 
-2.  **Install dependencies:**
-    ```bash
-    npm install
-    ```
+2. **Install dependencies**
+   ```bash
+   npm install
+   ```
 
-### Running the Development Server
+3. **Start Development Server**
+   ```bash
+   npm run dev
+   ```
 
-To start the development server and view the application in your browser:
-```bash
-npm run dev
-```
-The application will typically be available at `http://localhost:3000`.
+4. **Build for Production**
+   ```bash
+   npm run build
+   ```
 
-### Building for Production
+---
 
-To build the application for production:
-```bash
-npm run build
-```
-This will generate a `dist` folder containing the optimized production build.
+## 👤 Author
+**Kasper166**  
+*Building the future of digital-physical interaction.*
 
-## How to Use
-*(This section will be expanded once the specific user interactions are fully implemented.)*
+---
 
-Currently, after running the development server, you can interact with the various components (Scanner, Solver, Verifier) as they are implemented.
+## 📄 License
+This project is licensed under the MIT License.

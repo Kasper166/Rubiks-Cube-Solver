@@ -7,10 +7,10 @@ import { CubeState, INITIAL_CUBE_STATE } from './lib/cubeUtils';
 
 type Phase = 'scan' | 'verify' | 'solve';
 
-const PHASES: { id: Phase; label: string }[] = [
-  { id: 'scan', label: 'Scan' },
-  { id: 'verify', label: 'Verify' },
-  { id: 'solve', label: 'Solve' },
+const PHASES: { id: Phase; label: string; emoji: string }[] = [
+  { id: 'scan', label: 'Scan', emoji: '📷' },
+  { id: 'verify', label: 'Verify', emoji: '✓' },
+  { id: 'solve', label: 'Solve', emoji: '🧩' },
 ];
 
 export default function App() {
@@ -36,21 +36,22 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-zinc-950 text-white font-sans selection:bg-white selection:text-black overflow-x-hidden">
-      {/* Wizard Progress Bar */}
+      {/* ─── Wizard Progress Bar ───────────────── */}
       <nav className="fixed top-0 left-0 right-0 z-50 p-6 flex justify-center pointer-events-none">
         <div className="glass px-6 py-3 rounded-full flex items-center gap-8 pointer-events-auto">
           {PHASES.map((p, i) => (
             <div key={p.id} className="flex items-center gap-3">
-              <div
+              <motion.div
                 className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all duration-500 ${
-                  i <= currentPhaseIndex 
-                    ? 'bg-white text-black scale-110 shadow-[0_0_20px_rgba(255,255,255,0.3)]' 
+                  i <= currentPhaseIndex
+                    ? 'bg-white text-black scale-110 shadow-[0_0_20px_rgba(255,255,255,0.3)]'
                     : 'bg-zinc-800 text-zinc-500'
                 }`}
+                animate={{ scale: i === currentPhaseIndex ? 1.15 : i < currentPhaseIndex ? 1 : 0.9 }}
               >
-                {i + 1}
-              </div>
-              <span 
+                {i < currentPhaseIndex ? '✓' : i + 1}
+              </motion.div>
+              <span
                 className={`text-sm font-semibold transition-all duration-500 ${
                   i <= currentPhaseIndex ? 'text-white' : 'text-zinc-600'
                 }`}
@@ -58,13 +59,16 @@ export default function App() {
                 {p.label}
               </span>
               {i < PHASES.length - 1 && (
-                <div className={`w-8 h-[1px] ml-2 ${i < currentPhaseIndex ? 'bg-white/40' : 'bg-zinc-800'}`} />
+                <div className={`w-8 h-[1px] ml-2 transition-all duration-500 ${
+                  i < currentPhaseIndex ? 'bg-white/40' : 'bg-zinc-800'
+                }`} />
               )}
             </div>
           ))}
         </div>
       </nav>
 
+      {/* ─── Phase Content ─────────────────────── */}
       <main className="relative pt-24 min-h-screen">
         <AnimatePresence mode="wait">
           {phase === 'scan' && (
@@ -108,6 +112,13 @@ export default function App() {
           )}
         </AnimatePresence>
       </main>
+
+      {/* ─── Footer Branding ───────────────────── */}
+      <footer className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 pointer-events-none">
+        <p className="text-[10px] text-zinc-700 font-mono tracking-widest uppercase">
+          Spectro-Cube • Parallel Processing Architecture
+        </p>
+      </footer>
     </div>
   );
 }

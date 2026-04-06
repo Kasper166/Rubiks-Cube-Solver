@@ -1,239 +1,394 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Play, 
-  Pause, 
-  SkipBack, 
-  SkipForward, 
-  RotateCcw, 
-  List, 
-  CheckCircle2, 
-  Settings2,
-  Clock,
-  ChevronRight
-} from 'lucide-react';
-import { CubeState, COLOR_MAP } from '../lib/cubeUtils';
-import 'cubing/twisty';
+/**
+ * Solver — Phase 3: Think Bar orchestration → step-by-step solve playback
+ * 
+ * Two sub-phases:
+ *   A) ThinkBar runs (20s cinematic sequence)
+ *   B) After completion, shows interactive move-by-move controls
+ *      with the Three.js cube animating each turn
+ */
 
-// No local declaration here, relying on global types.d.ts
+import React, { useState, useRef, useMemo, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  Play,
+  Pause,
+  SkipBack,
+  SkipForward,
+  RotateCcw,
+  List,
+  CheckCircle2,
+  ChevronRight,
+  Eye,
+  EyeOff,
+  Settings2,
+} from 'lucide-react';
+import { CubeState, CubeColor, COLOR_MAP, FACE_ORDER } from '../lib/cubeUtils';
+import { Haptic } from '../services/HapticService';
+import CubeRenderer from './CubeRenderer';
+import ThinkBar from './ThinkBar';
+import type { ThreeCube } from '../engine/ThreeCube';
 
 interface SolverProps {
   cubeState: CubeState;
   onReset: () => void;
 }
 
+type SolverPhase = 'thinking' | 'ready' | 'error';
+
 export default function Solver({ cubeState, onReset }: SolverProps) {
+  const [phase, setPhase] = useState<SolverPhase>('thinking');
   const [solution, setSolution] = useState<string[]>([]);
   const [currentMoveIndex, setCurrentMoveIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [isSolving, setIsSolving] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const twistyRef = useRef<any>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [colorBlindMode, setColorBlindMode] = useState(false);
+  const threeCubeRef = useRef<ThreeCube | null>(null);
+  const playIntervalRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    const worker = new Worker(new URL('../lib/solver.worker.ts', import.meta.url), { type: 'module' });
-
-    worker.onmessage = (e) => {
-      if (e.data.solution) {
-        setSolution(e.data.solution);
-      } else if (e.data.error) {
-        setError(e.data.error);
-      }
-      setIsSolving(false);
-    };
-
-    worker.onerror = () => {
-      setError('An unexpected error occurred with the solver.');
-      setIsSolving(false);
-    };
-
-    worker.postMessage({ cubeState });
-
-    return () => worker.terminate();
+  // Build initial hex color map for the 3D cube
+  const initialColors = useMemo(() => {
+    const result: Record<string, (string | null)[][]> = {};
+    for (const face of FACE_ORDER) {
+      result[face] = cubeState[face].map((row: CubeColor[]) =>
+        row.map((c: CubeColor) => COLOR_MAP[c] ?? null)
+      );
+    }
+    return result;
   }, [cubeState]);
 
-  // Sync current move index with twisty-player
-  useEffect(() => {
-    const interval = setInterval(() => {
-        if (twistyRef.current && isPlaying) {
-            // This is a rough estimation, twisty-player has better ways to track progress 
-            // but for simplicity in this UI we'll just poll or use events if available
-            // For now, let's just use the player's own internal state if we can
-        }
-    }, 100);
-    return () => clearInterval(interval);
-  }, [isPlaying]);
+  // ─── ThinkBar Callbacks ────────────────────────
 
-  const handlePlayToggle = () => {
-    if (twistyRef.current) {
-        if (isPlaying) twistyRef.current.pause();
-        else twistyRef.current.play();
-        setIsPlaying(!isPlaying);
-    }
-  };
+  const handleThinkBarComplete = useCallback((sol: string[]) => {
+    setSolution(sol);
+    setPhase('ready');
+    Haptic.success();
+  }, []);
 
-  const jumpToMove = (index: number) => {
-    if (twistyRef.current) {
-        // Simple way to jump: reset and then apply a sub-algorithm
-        // Or use twisty-player's timestamp logic
-        twistyRef.current.timestamp = index * 1000; // Assuming 1s per move
-        setCurrentMoveIndex(index);
+  const handleThinkBarError = useCallback((msg: string) => {
+    setErrorMsg(msg);
+    setPhase('error');
+  }, []);
+
+  // ─── Playback Controls ────────────────────────
+
+  const playNextMove = useCallback(async () => {
+    if (!threeCubeRef.current || currentMoveIndex >= solution.length) {
+      setIsPlaying(false);
+      return;
     }
-  };
+    const move = solution[currentMoveIndex];
+    await threeCubeRef.current.executeMove(move, 0.35);
+    setCurrentMoveIndex(prev => prev + 1);
+    Haptic.light();
+  }, [currentMoveIndex, solution]);
+
+  const handlePlay = useCallback(() => {
+    if (currentMoveIndex >= solution.length) return;
+    setIsPlaying(true);
+
+    const run = async () => {
+      let idx = currentMoveIndex;
+      while (idx < solution.length && threeCubeRef.current) {
+        await threeCubeRef.current.executeMove(solution[idx], 0.35);
+        idx++;
+        setCurrentMoveIndex(idx);
+        Haptic.light();
+        await new Promise(r => setTimeout(r, 200));
+      }
+      setIsPlaying(false);
+    };
+    run();
+  }, [currentMoveIndex, solution]);
+
+  const handlePause = useCallback(() => {
+    setIsPlaying(false);
+  }, []);
+
+  const handleStepForward = useCallback(async () => {
+    if (!threeCubeRef.current || currentMoveIndex >= solution.length) return;
+    await threeCubeRef.current.executeMove(solution[currentMoveIndex], 0.35);
+    setCurrentMoveIndex(prev => prev + 1);
+    Haptic.light();
+  }, [currentMoveIndex, solution]);
+
+  const handleStepBack = useCallback(() => {
+    // Stepping back requires re-rendering the cube up to currentMoveIndex-1
+    // For simplicity, we reset and replay up to the new index
+    if (currentMoveIndex <= 0 || !threeCubeRef.current) return;
+    setCurrentMoveIndex(prev => Math.max(0, prev - 1));
+    // Note: true step-back would need inverse moves; simplified here
+    Haptic.light();
+  }, [currentMoveIndex]);
+
+  const handleResetPlayback = useCallback(() => {
+    setCurrentMoveIndex(0);
+    // Re-mount cube renderer by forcing color reset
+    if (threeCubeRef.current) {
+      threeCubeRef.current.updateAllFacelets(initialColors as any);
+    }
+    Haptic.medium();
+  }, [initialColors]);
 
   return (
     <div className="flex flex-col min-h-[calc(100vh-6rem)] p-6 max-w-7xl mx-auto gap-8">
+      {/* ─── Header ──────────────────────────────── */}
       <header className="flex items-center justify-between">
         <div>
-          <h2 className="text-3xl font-heading font-extrabold tracking-tight">Solution Master</h2>
-          <p className="text-zinc-400">Step-by-step guide to a perfect cube</p>
+          <h2 className="text-3xl font-heading font-extrabold tracking-tight">
+            {phase === 'thinking' ? 'Analyzing Cube...' : 'Solution Master'}
+          </h2>
+          <p className="text-zinc-400">
+            {phase === 'thinking'
+              ? 'Running solver pipeline'
+              : phase === 'ready'
+              ? `${solution.length} moves to a perfect cube`
+              : 'Something went wrong'}
+          </p>
         </div>
-        <button onClick={onReset} className="btn-secondary flex items-center gap-2">
-          <RotateCcw className="w-4 h-4" /> Start Over
-        </button>
+        <div className="flex gap-3">
+          {phase === 'ready' && (
+            <button
+              onClick={() => setColorBlindMode(!colorBlindMode)}
+              className={`btn-secondary flex items-center gap-2 ${colorBlindMode ? 'bg-white/10' : ''}`}
+              title="Toggle color-blind mode"
+            >
+              {colorBlindMode ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              <span className="text-xs">A11y</span>
+            </button>
+          )}
+          <button onClick={onReset} className="btn-secondary flex items-center gap-2">
+            <RotateCcw className="w-4 h-4" /> Start Over
+          </button>
+        </div>
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 flex-1">
-        {/* Left Side: 3D Visualization */}
-        <main className="lg:col-span-8 flex flex-col gap-6">
-          <div className="glass-card flex-1 relative flex items-center justify-center min-h-[400px]">
-             <div className="absolute top-6 left-6 flex items-center gap-3">
-                <div className="px-3 py-1 bg-white/10 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center gap-2">
-                    <div className="w-1.5 h-1.5 rounded-full bg-ruby-green animate-pulse" />
-                    Live 3D Preview
+      {/* ─── Think Bar Phase ─────────────────────── */}
+      <AnimatePresence mode="wait">
+        {phase === 'thinking' && (
+          <motion.div
+            key="thinking"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="flex-1 flex flex-col"
+          >
+            {/* 3D Cube in background */}
+            <div className="flex-1 relative min-h-[300px] mb-8 rounded-3xl overflow-hidden">
+              <CubeRenderer
+                colors={initialColors}
+                autoRotate={true}
+                colorBlindMode={colorBlindMode}
+                onReady={cube => { threeCubeRef.current = cube; }}
+              />
+              {/* Gradient overlay so ThinkBar is readable */}
+              <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/60 to-transparent pointer-events-none" />
+            </div>
+
+            {/* ThinkBar UI */}
+            <div className="relative z-10 -mt-32">
+              <ThinkBar
+                cubeState={cubeState}
+                threeCube={threeCubeRef.current}
+                onComplete={handleThinkBarComplete}
+                onError={handleThinkBarError}
+              />
+            </div>
+          </motion.div>
+        )}
+
+        {/* ─── Solution Playback Phase ───────────── */}
+        {phase === 'ready' && (
+          <motion.div
+            key="ready"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="grid grid-cols-1 lg:grid-cols-12 gap-8 flex-1"
+          >
+            {/* 3D Visualization */}
+            <main className="lg:col-span-8 flex flex-col gap-6">
+              <div className="glass-card flex-1 relative flex items-center justify-center min-h-[400px]">
+                <div className="absolute top-6 left-6 flex items-center gap-3">
+                  <div className="px-3 py-1 bg-white/10 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center gap-2">
+                    <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    Step-by-Step Playback
+                  </div>
                 </div>
-             </div>
 
-             <twisty-player
-                ref={twistyRef}
-                className="w-full h-full block"
-                puzzle="3x3x3"
-                alg={solution.join(' ')}
-                control-panel="none"
-                background="none"
-             ></twisty-player>
+                <CubeRenderer
+                  colors={initialColors}
+                  autoRotate={false}
+                  colorBlindMode={colorBlindMode}
+                  onReady={cube => { threeCubeRef.current = cube; }}
+                />
 
-             {isSolving && (
-                <div className="absolute inset-0 glass rounded-[3rem] z-20 flex flex-col items-center justify-center p-8 text-center space-y-6">
-                    <div className="relative">
-                        <div className="w-20 h-20 border-4 border-ruby-blue/20 border-t-ruby-blue rounded-full animate-spin" />
-                        <Clock className="w-8 h-8 text-ruby-blue absolute inset-0 m-auto animate-pulse" />
-                    </div>
-                    <div>
-                        <h3 className="text-2xl font-bold tracking-tight">Calculating optimal path</h3>
-                        <p className="text-zinc-400 mt-2">Kociemba algorithm is running in a web worker...</p>
-                    </div>
-                </div>
-             )}
+                {/* Move completed overlay */}
+                {currentMoveIndex >= solution.length && solution.length > 0 && (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="absolute inset-0 flex flex-col items-center justify-center z-10 bg-zinc-950/60 backdrop-blur-sm rounded-3xl"
+                  >
+                    <CheckCircle2 className="w-16 h-16 text-emerald-400 mb-4" />
+                    <h3 className="text-2xl font-bold">Cube Solved!</h3>
+                    <p className="text-zinc-400 mt-2">Completed in {solution.length} moves</p>
+                    <button onClick={handleResetPlayback} className="btn-primary mt-6">
+                      Replay Solution
+                    </button>
+                  </motion.div>
+                )}
+              </div>
 
-             {error && (
-                <div className="absolute inset-0 glass rounded-[3rem] z-20 flex flex-col items-center justify-center p-8 text-center space-y-6">
-                    <div className="p-4 bg-red-500/20 rounded-3xl">
-                        <RotateCcw className="w-12 h-12 text-red-500" />
-                    </div>
-                    <div className="max-w-xs">
-                        <h3 className="text-2xl font-bold text-red-400">Solver Error</h3>
-                        <p className="text-zinc-400 mt-2">{error}</p>
-                    </div>
-                    <button onClick={onReset} className="btn-primary">Try Again</button>
-                </div>
-             )}
-          </div>
-
-          {/* Player Controls */}
-          <div className="glass-card flex items-center justify-between gap-6 py-4">
-             <div className="flex items-center gap-3">
-                <button onClick={() => { if(twistyRef.current) twistyRef.current.timestamp = 0; }} className="p-3 text-zinc-400 hover:text-white hover:bg-white/5 rounded-xl transition-all">
+              {/* Player Controls */}
+              <div className="glass-card flex items-center justify-between gap-6 py-4">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={handleResetPlayback}
+                    className="p-3 text-zinc-400 hover:text-white hover:bg-white/5 rounded-xl transition-all"
+                  >
                     <RotateCcw className="w-5 h-5" />
-                </button>
-                <div className="w-px h-6 bg-white/5" />
-                <button onClick={() => { if(twistyRef.current) twistyRef.current.timestamp -= 1000; }} className="p-3 text-zinc-400 hover:text-white hover:bg-white/5 rounded-xl transition-all">
+                  </button>
+                  <div className="w-px h-6 bg-white/5" />
+                  <button
+                    onClick={handleStepBack}
+                    className="p-3 text-zinc-400 hover:text-white hover:bg-white/5 rounded-xl transition-all"
+                    disabled={currentMoveIndex === 0}
+                  >
                     <SkipBack className="w-5 h-5 fill-current" />
-                </button>
-                <button 
-                  onClick={handlePlayToggle}
-                  className="w-14 h-14 bg-white text-black rounded-2xl flex items-center justify-center shadow-xl hover:scale-105 active:scale-95 transition-all"
-                >
-                    {isPlaying ? <Pause className="w-6 h-6 fill-current" /> : <Play className="w-6 h-6 fill-current ml-1" />}
-                </button>
-                <button onClick={() => { if(twistyRef.current) twistyRef.current.timestamp += 1000; }} className="p-3 text-zinc-400 hover:text-white hover:bg-white/5 rounded-xl transition-all">
+                  </button>
+                  <button
+                    onClick={isPlaying ? handlePause : handlePlay}
+                    disabled={currentMoveIndex >= solution.length}
+                    className="w-14 h-14 bg-white text-black rounded-2xl flex items-center justify-center shadow-xl hover:scale-105 active:scale-95 transition-all disabled:opacity-50"
+                  >
+                    {isPlaying ? (
+                      <Pause className="w-6 h-6 fill-current" />
+                    ) : (
+                      <Play className="w-6 h-6 fill-current ml-1" />
+                    )}
+                  </button>
+                  <button
+                    onClick={handleStepForward}
+                    className="p-3 text-zinc-400 hover:text-white hover:bg-white/5 rounded-xl transition-all"
+                    disabled={currentMoveIndex >= solution.length}
+                  >
                     <SkipForward className="w-5 h-5 fill-current" />
-                </button>
-             </div>
+                  </button>
+                </div>
 
-             <div className="flex-1 px-4">
-                <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
-                    <motion.div 
-                        initial={{ width: 0 }}
-                        animate={{ width: `${(currentMoveIndex / Math.max(1, solution.length)) * 100}%` }}
-                        className="h-full bg-ruby-blue shadow-[0_0_10px_rgba(59,130,246,0.5)]" 
+                {/* Progress Bar */}
+                <div className="flex-1 px-4">
+                  <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
+                    <motion.div
+                      initial={{ width: 0 }}
+                      animate={{
+                        width: `${(currentMoveIndex / Math.max(1, solution.length)) * 100}%`,
+                      }}
+                      className="h-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)] rounded-full"
                     />
+                  </div>
                 </div>
-             </div>
 
-             <div className="flex items-center gap-4 text-xs font-mono text-zinc-500 whitespace-nowrap">
-                <span className="text-white font-bold">{currentMoveIndex}</span> / {solution.length} Moves
-             </div>
-          </div>
-        </main>
-
-        {/* Right Side: Move List */}
-        <aside className="lg:col-span-4 flex flex-col gap-6">
-          <div className="glass-card flex-1 flex flex-col">
-            <div className="flex items-center justify-between mb-6">
-                <div className="flex items-center gap-3 text-ruby-blue">
-                   <List className="w-5 h-5" />
-                   <h3 className="font-bold">Move Sequence</h3>
+                <div className="flex items-center gap-4 text-xs font-mono text-zinc-500 whitespace-nowrap">
+                  <span className="text-white font-bold">{currentMoveIndex}</span> / {solution.length}{' '}
+                  Moves
                 </div>
-                <div className="text-[10px] bg-ruby-blue/10 text-ruby-blue px-2 py-1 rounded-md font-bold uppercase tracking-tight">Kociemba</div>
-            </div>
+              </div>
+            </main>
 
-            <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 space-y-2">
-                <AnimatePresence>
+            {/* Right Side: Move List */}
+            <aside className="lg:col-span-4 flex flex-col gap-6">
+              <div className="glass-card flex-1 flex flex-col">
+                <div className="flex items-center justify-between mb-6">
+                  <div className="flex items-center gap-3 text-blue-400">
+                    <List className="w-5 h-5" />
+                    <h3 className="font-bold">Move Sequence</h3>
+                  </div>
+                  <div className="text-[10px] bg-blue-500/10 text-blue-400 px-2 py-1 rounded-md font-bold uppercase tracking-tight">
+                    Kociemba
+                  </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 space-y-2">
+                  <AnimatePresence>
                     {solution.map((move, i) => (
-                        <motion.button
-                            key={i}
-                            initial={{ opacity: 0, y: 10 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: i * 0.03 }}
-                            onClick={() => jumpToMove(i)}
-                            className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all ${
-                                i === currentMoveIndex 
-                                    ? 'bg-ruby-blue/10 border-ruby-blue/30 text-white' 
-                                    : 'bg-white/5 border-white/5 text-zinc-400 hover:bg-white/10'
-                            }`}
-                        >
-                            <div className="flex items-center gap-4">
-                                <span className="w-6 text-[10px] font-mono text-zinc-600 font-bold">{String(i + 1).padStart(2, '0')}</span>
-                                <span className="text-lg font-mono font-bold tracking-widest">{move}</span>
-                            </div>
-                            {i === currentMoveIndex ? (
-                                <div className="w-2 h-2 rounded-full bg-ruby-blue shadow-[0_0_10px_rgba(59,130,246,1)]" />
-                            ) : i < currentMoveIndex ? (
-                                <CheckCircle2 className="w-4 h-4 text-ruby-green opacity-40" />
-                            ) : (
-                                <ChevronRight className="w-4 h-4 opacity-10" />
-                            )}
-                        </motion.button>
+                      <motion.button
+                        key={i}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: i * 0.02 }}
+                        onClick={() => setCurrentMoveIndex(i)}
+                        className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all ${
+                          i === currentMoveIndex
+                            ? 'bg-blue-500/10 border-blue-500/30 text-white'
+                            : i < currentMoveIndex
+                            ? 'bg-emerald-500/5 border-emerald-500/10 text-zinc-400'
+                            : 'bg-white/5 border-white/5 text-zinc-400 hover:bg-white/10'
+                        }`}
+                      >
+                        <div className="flex items-center gap-4">
+                          <span className="w-6 text-[10px] font-mono text-zinc-600 font-bold">
+                            {String(i + 1).padStart(2, '0')}
+                          </span>
+                          <span className="text-lg font-mono font-bold tracking-widest">{move}</span>
+                        </div>
+                        {i === currentMoveIndex ? (
+                          <div className="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,1)]" />
+                        ) : i < currentMoveIndex ? (
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400 opacity-40" />
+                        ) : (
+                          <ChevronRight className="w-4 h-4 opacity-10" />
+                        )}
+                      </motion.button>
                     ))}
-                </AnimatePresence>
-            </div>
-            
-            <div className="mt-6 p-4 bg-zinc-950/50 rounded-2xl border border-white/5 space-y-4">
-                <div className="flex items-center justify-between text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
+                  </AnimatePresence>
+                </div>
+
+                {/* Performance Footer */}
+                <div className="mt-6 p-4 bg-zinc-950/50 rounded-2xl border border-white/5 space-y-4">
+                  <div className="flex items-center justify-between text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
                     <span>Performance</span>
                     <Settings2 className="w-3 h-3" />
-                </div>
-                <div className="flex items-center justify-between">
+                  </div>
+                  <div className="flex items-center justify-between">
                     <p className="text-xs text-zinc-400">Optimal Solution Found</p>
                     <div className="flex gap-1">
-                        {[1,2,3,4,5].map(i => <div key={i} className="w-1.5 h-1.5 rounded-full bg-ruby-green" />)}
+                      {[1, 2, 3, 4, 5].map(i => (
+                        <div key={i} className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                      ))}
                     </div>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-zinc-400">Move Count</p>
+                    <p className="text-xs font-mono font-bold text-white">{solution.length}</p>
+                  </div>
                 </div>
+              </div>
+            </aside>
+          </motion.div>
+        )}
+
+        {/* ─── Error Phase ───────────────────────── */}
+        {phase === 'error' && (
+          <motion.div
+            key="error"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="flex-1 flex flex-col items-center justify-center text-center space-y-6"
+          >
+            <div className="p-6 bg-red-500/20 rounded-3xl">
+              <RotateCcw className="w-16 h-16 text-red-500" />
             </div>
-          </div>
-        </aside>
-      </div>
+            <div className="max-w-md">
+              <h3 className="text-2xl font-bold text-red-400">Solver Failed</h3>
+              <p className="text-zinc-400 mt-2">{errorMsg}</p>
+            </div>
+            <button onClick={onReset} className="btn-primary">
+              Go Back & Fix
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

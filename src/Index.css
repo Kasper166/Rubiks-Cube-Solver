@@ -50,6 +50,8 @@
   }
 }
 
+/* ─── Custom Scrollbar ──────────────────────── */
+
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;
 }
@@ -62,4 +64,51 @@
 }
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.2);
+}
+
+/* ─── Think Bar Animations ──────────────────── */
+
+@keyframes think-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.05); }
+}
+
+@keyframes think-glow {
+  0%, 100% { box-shadow: 0 0 20px rgba(59, 130, 246, 0.1); }
+  50% { box-shadow: 0 0 40px rgba(59, 130, 246, 0.3); }
+}
+
+@keyframes scan-line {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+.think-pulse {
+  animation: think-pulse 2s ease-in-out infinite;
+}
+
+.think-glow {
+  animation: think-glow 3s ease-in-out infinite;
+}
+
+.scan-line {
+  animation: scan-line 2s linear infinite;
+}
+
+/* ─── Glare Warning ─────────────────────────── */
+
+@keyframes glare-flash {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+.glare-warning {
+  animation: glare-flash 1.5s ease-in-out infinite;
+}
+
+/* ─── WebGL Canvas Overrides ────────────────── */
+
+canvas {
+  outline: none !important;
+  touch-action: pan-y;
 }

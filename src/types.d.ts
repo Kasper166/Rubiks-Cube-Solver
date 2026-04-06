@@ -1,19 +1,12 @@
-import React from 'react';
+/**
+ * types.d.ts — Global type augmentations for Spectro-Cube
+ */
 
-declare global {
-  namespace JSX {
-    interface IntrinsicElements {
-      'twisty-player': React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement> & {
-        'alg'?: string;
-        'puzzle'?: string;
-        'visualization'?: string;
-        'control-panel'?: string;
-        'background'?: string;
-        'hint-facelets'?: string;
-        'stickering'?: string;
-        'experimental-stickering'?: string;
-      };
-    }
-  }
+// Allow importing worker files
+declare module '*?worker' {
+  const workerConstructor: new () => Worker;
+  export default workerConstructor;
 }
+
+
 export {};

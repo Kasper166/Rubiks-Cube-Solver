@@ -3,6 +3,7 @@ export type FaceName = 'U' | 'R' | 'F' | 'D' | 'L' | 'B';
 export type CubeColor = 'white' | 'red' | 'green' | 'yellow' | 'orange' | 'blue';
 
 export const FACE_ORDER: FaceName[] = ['U', 'F', 'R', 'B', 'L', 'D'];
+export const KOCIEMBA_FACE_ORDER: FaceName[] = ['U', 'R', 'F', 'D', 'L', 'B'];
 
 export const ROTATION_GUIDANCE: Record<FaceName, { text: string; alg: string }> = {
   U: { text: "Scan the Top face", alg: "" },
@@ -94,12 +95,13 @@ function rgbToHsv(r: number, g: number, b: number) {
 export function cubeStateToDefinition(state: CubeState): string {
   // Map each color to the face it represents (based on center stickers)
   const colorToFace: Record<string, string> = {};
-  for (const face of FACE_ORDER) {
+  for (const face of KOCIEMBA_FACE_ORDER) {
     colorToFace[state[face][1][1]] = face;
   }
 
   let def = '';
-  for (const face of FACE_ORDER) {
+  // Standard Kociemba facelet string order: U, R, F, D, L, B
+  for (const face of KOCIEMBA_FACE_ORDER) {
     for (let r = 0; r < 3; r++) {
       for (let c = 0; c < 3; c++) {
         const color = state[face][r][c];
