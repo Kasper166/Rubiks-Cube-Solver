@@ -8,12 +8,12 @@ export const FACE_ORDER: FaceName[] = ['U', 'F', 'R', 'B', 'L', 'D'];
 export const KOCIEMBA_FACE_ORDER: FaceName[] = ['U', 'R', 'F', 'D', 'L', 'B'];
 
 export const ROTATION_GUIDANCE: Record<FaceName, { text: string; alg: string }> = {
-  U: { text: "Scan the Top face", alg: "" },
-  F: { text: "Rotate cube DOWN to show Front", alg: "x" },
-  R: { text: "Rotate cube LEFT to show Right", alg: "y" },
-  B: { text: "Rotate cube LEFT to show Back", alg: "y" },
-  L: { text: "Rotate cube LEFT to show Left", alg: "y" },
-  D: { text: "Rotate cube DOWN to show Bottom", alg: "z2 x" }, // This is a bit complex, might need better logic
+  U: { text: "Scan the Top face (White center)", alg: "" },
+  F: { text: "Rotate DOWN to show Front (Green center)", alg: "x'" },
+  R: { text: "Rotate LEFT to show Right (Red center)", alg: "y" },
+  B: { text: "Rotate LEFT to show Back (Blue center)", alg: "y" },
+  L: { text: "Rotate LEFT to show Left (Orange center)", alg: "y" },
+  D: { text: "Rotate UP to show Bottom (Yellow center)", alg: "x" },
 };
 
 // Simplified fixed rotation sequence: 

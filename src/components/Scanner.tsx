@@ -147,6 +147,20 @@ export default function Scanner({ onComplete }: ScannerProps) {
                 continue;
               }
 
+              // Force center color for the current face to avoid misdetection
+              if (r === 1 && c === 1) {
+                const expectedCenter = {
+                  U: 'white',
+                  F: 'green',
+                  R: 'red',
+                  B: 'blue',
+                  L: 'orange',
+                  D: 'yellow'
+                }[currentFace] as CubeColor;
+                row.push(expectedCenter);
+                continue;
+              }
+
               const x = offset + c * boxSize + boxSize / 2;
               const y = offset + r * boxSize + boxSize / 2;
               const sampleSize = 12; // Slightly smaller sample for better precision
@@ -320,7 +334,7 @@ export default function Scanner({ onComplete }: ScannerProps) {
           </AnimatePresence>
 
           {/* Live Recognition Grid — Bottom Right */}
-          <div className="absolute bottom-4 right-4 z-10">
+          <div className="absolute bottom-4 right-4 z-10 w-24 sm:w-32 lg:w-40">
             <CanvasOverlay
               colors={realTimeColors.map(row => row.map(c => COLOR_MAP[c]))}
               onStickerChange={handleOverlayChange}
@@ -456,10 +470,14 @@ function RotationArrow({ alg }: { alg: string }) {
   let rotationClass = "";
   let icon = <ArrowRight className="w-12 h-12" />;
 
-  if (alg.includes('x')) {
-    rotationClass = "-rotate-90"; // Down/Up
-  } else if (alg.includes('y')) {
-    rotationClass = "rotate-0"; // Side
+  if (alg === "x") {
+    rotationClass = "-rotate-90"; // UP (Bottom -> Front)
+  } else if (alg === "x'") {
+    rotationClass = "rotate-90"; // DOWN (Top -> Front)
+  } else if (alg === "y") {
+    rotationClass = "rotate-180"; // LEFT (Right -> Front)
+  } else if (alg === "y'") {
+    rotationClass = "rotate-0"; // RIGHT (Left -> Front)
   }
 
   return (
