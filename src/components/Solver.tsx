@@ -280,6 +280,7 @@ export default function Solver({ cubeState, onReset }: SolverProps) {
                 <div className="flex items-center gap-3">
                   <button
                     onClick={handleResetPlayback}
+                    aria-label="Reset playback"
                     className="p-3 text-zinc-400 hover:text-white hover:bg-white/5 rounded-xl transition-all"
                   >
                     <RotateCcw className="w-5 h-5" />
@@ -287,6 +288,7 @@ export default function Solver({ cubeState, onReset }: SolverProps) {
                   <div className="w-px h-6 bg-white/5" />
                   <button
                     onClick={handleStepBack}
+                    aria-label="Step back"
                     className="p-3 text-zinc-400 hover:text-white hover:bg-white/5 rounded-xl transition-all"
                     disabled={currentMoveIndex === 0}
                   >
@@ -294,6 +296,7 @@ export default function Solver({ cubeState, onReset }: SolverProps) {
                   </button>
                   <button
                     onClick={isPlaying ? handlePause : handlePlay}
+                    aria-label={isPlaying ? "Pause" : "Play"}
                     disabled={currentMoveIndex >= solution.length}
                     className="w-14 h-14 bg-white text-black rounded-2xl flex items-center justify-center shadow-xl hover:scale-105 active:scale-95 transition-all disabled:opacity-50"
                   >
@@ -305,6 +308,7 @@ export default function Solver({ cubeState, onReset }: SolverProps) {
                   </button>
                   <button
                     onClick={handleStepForward}
+                    aria-label="Step forward"
                     className="p-3 text-zinc-400 hover:text-white hover:bg-white/5 rounded-xl transition-all"
                     disabled={currentMoveIndex >= solution.length}
                   >
