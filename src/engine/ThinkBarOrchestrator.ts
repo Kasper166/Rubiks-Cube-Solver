@@ -132,7 +132,8 @@ async function runParallelSolver(
         }
       };
 
-      worker.onerror = () => {
+      worker.onerror = (event) => {
+        console.error('Solver worker error:', event.message);
         completedCount++;
         if (completedCount >= numOrientations) {
           workers.forEach(w => w.terminate());

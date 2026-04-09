@@ -46,10 +46,11 @@ export default function Scanner({ onComplete }: ScannerProps) {
   const [glare, setGlare] = useState<GlareResult | null>(null);
   const [showIntro, setShowIntro] = useState(true);
   
-  // Auto-capture states
-  const [lastFingerprint, setLastFingerprint] = useState("");
-  const [stabilityStart, setStabilityStart] = useState<number | null>(null);
-  const [lastCapturedFace, setLastCapturedFace] = useState<FaceName | null>(null);
+  // Auto-capture states — use refs so the rAF loop always reads current values
+  const lastFingerprintRef = useRef("");
+  const stabilityStartRef = useRef<number | null>(null);
+  const lastCapturedFaceRef = useRef<FaceName | null>(null);
+  const captureFaceRef = useRef<() => void>(() => {});
 
   const currentFace = FACE_ORDER[currentFaceIndex];
   const guidance = ROTATION_GUIDANCE[currentFace];
@@ -66,7 +67,15 @@ export default function Scanner({ onComplete }: ScannerProps) {
   }, [scannedState]);
 
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
-  
+
+  // Refs mirroring state for the rAF detect() loop (avoids stale closures)
+  const facingModeRef = useRef(facingMode);
+  facingModeRef.current = facingMode;
+  const manualOverridesRef = useRef(manualOverrides);
+  manualOverridesRef.current = manualOverrides;
+  const currentFaceRef = useRef(currentFace);
+  currentFaceRef.current = currentFace;
+
   // Toggle camera
   const flipCamera = useCallback(() => {
     setFacingMode(prev => prev === 'user' ? 'environment' : 'user');
@@ -113,15 +122,19 @@ export default function Scanner({ onComplete }: ScannerProps) {
           canvas.width = 300; // Small canvas for processing
           canvas.height = 300;
           
+          // Read current values from refs to avoid stale closures
+          const curFacingMode = facingModeRef.current;
+          const curOverrides = manualOverridesRef.current;
+          const curFace = currentFaceRef.current;
+
           // Draw video to canvas
-          if (facingMode === 'user') {
+          ctx.save();
+          if (curFacingMode === 'user') {
             // Mirror for user facing camera
             ctx.translate(canvas.width, 0);
             ctx.scale(-1, 1);
           }
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          // Reset transform for next frame or logic
-          ctx.setTransform(1, 0, 0, 1, 0, 0);
           ctx.restore();
 
           // Glare detection
@@ -130,7 +143,7 @@ export default function Scanner({ onComplete }: ScannerProps) {
           setGlare(glareResult);
 
           // Color detection per grid cell
-          // We align the 3x3 sampling grid with a 256x256 theoretical guide 
+          // We align the 3x3 sampling grid with a 256x256 theoretical guide
           // centered in the 300x300 processing canvas.
           // Guide bounds: 22 to 278 (assuming centered)
           const guideSize = 256;
@@ -142,8 +155,8 @@ export default function Scanner({ onComplete }: ScannerProps) {
             const row: CubeColor[] = [];
             for (let c = 0; c < 3; c++) {
               // If manually overridden, use that color
-              if (manualOverrides[r][c]) {
-                row.push(manualOverrides[r][c]!);
+              if (curOverrides[r][c]) {
+                row.push(curOverrides[r][c]!);
                 continue;
               }
 
@@ -156,7 +169,7 @@ export default function Scanner({ onComplete }: ScannerProps) {
                   B: 'blue',
                   L: 'orange',
                   D: 'yellow'
-                }[currentFace] as CubeColor;
+                }[curFace] as CubeColor;
                 row.push(expectedCenter);
                 continue;
               }
@@ -177,18 +190,18 @@ export default function Scanner({ onComplete }: ScannerProps) {
           }
           setRealTimeColors(gridColors);
 
-          // Auto-capture detection
+          // Auto-capture detection (using refs for current values)
           const fingerprint = gridColors.flat().join("");
-          if (fingerprint !== lastFingerprint) {
-            setLastFingerprint(fingerprint);
-            setStabilityStart(Date.now());
-          } else if (stabilityStart && Date.now() - stabilityStart > 1200) {
+          if (fingerprint !== lastFingerprintRef.current) {
+            lastFingerprintRef.current = fingerprint;
+            stabilityStartRef.current = Date.now();
+          } else if (stabilityStartRef.current && Date.now() - stabilityStartRef.current > 1200) {
             // Stable for 1.2s - check if it's a new face
-            if (currentFace !== lastCapturedFace) {
+            if (curFace !== lastCapturedFaceRef.current) {
                // We trigger capture only if the colors are diverse enough
                const uniqueColors = new Set(gridColors.flat()).size;
                if (uniqueColors >= 2) {
-                 captureFace();
+                 captureFaceRef.current();
                }
             }
           }
@@ -207,13 +220,14 @@ export default function Scanner({ onComplete }: ScannerProps) {
       ...prev,
       [currentFace]: finalColors,
     }));
-    setLastCapturedFace(currentFace);
+    lastCapturedFaceRef.current = currentFace;
     setManualOverrides(Array(3).fill(null).map(() => Array(3).fill(null)));
-    
+
     if (currentFaceIndex < 5) {
       setCurrentFaceIndex(i => i + 1);
     }
   }, [currentFace, currentFaceIndex, realTimeColors]);
+  captureFaceRef.current = captureFace;
 
   const handleOverlayChange = useCallback(
     (row: number, col: number, colorLabel: string) => {
@@ -306,7 +320,7 @@ export default function Scanner({ onComplete }: ScannerProps) {
 
           {/* Rotation Arrow */}
           <AnimatePresence>
-            {!showIntro && currentFaceIndex > 0 && stabilityStart && (Date.now() - stabilityStart < 3000) && (
+            {!showIntro && currentFaceIndex > 0 && stabilityStartRef.current && (Date.now() - stabilityStartRef.current < 3000) && (
               <RotationArrow alg={guidance.alg} />
             )}
           </AnimatePresence>

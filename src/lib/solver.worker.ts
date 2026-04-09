@@ -26,10 +26,10 @@ ctx.onmessage = async (e: MessageEvent<{ cubeState: CubeState }>) => {
     const result = await solve(pattern);
     const moves = result.toString().split(' ').filter(m => m.length > 0);
     
-    ctx.postMessage({ 
+    ctx.postMessage({
       success: true,
-      solution: moves,
-      moveCount: moves.length 
+      moves: moves,
+      moveCount: moves.length
     });
   } catch (err) {
     console.error('Solver worker error:', err);

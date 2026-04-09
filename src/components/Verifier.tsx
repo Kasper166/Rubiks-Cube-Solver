@@ -41,7 +41,7 @@ interface VerifierProps {
 const ALL_COLORS: CubeColor[] = ['white', 'red', 'green', 'yellow', 'orange', 'blue'];
 
 export default function Verifier({ initialState, onConfirm, onBack }: VerifierProps) {
-  const [state, setState] = useState<CubeState>(initialState);
+  const [state, setState] = useState<CubeState>(() => JSON.parse(JSON.stringify(initialState)));
   const [selectedColor, setSelectedColor] = useState<CubeColor>('white');
   const [isEditing, setIsEditing] = useState(false);
   const [validation, setValidation] = useState<ValidationResult>({ isValid: false, errors: [] });

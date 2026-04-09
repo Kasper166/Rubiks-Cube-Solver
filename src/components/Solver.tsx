@@ -357,7 +357,7 @@ export default function Solver({ cubeState, onReset }: SolverProps) {
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: i * 0.02 }}
-                        onClick={() => setCurrentMoveIndex(i)}
+                        onClick={() => { if (!isAnimatingRef.current) { setIsPlaying(false); setCurrentMoveIndex(i); } }}
                         className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all ${
                           i === currentMoveIndex
                             ? 'bg-blue-500/10 border-blue-500/30 text-white'

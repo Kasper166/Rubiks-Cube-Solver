@@ -83,7 +83,7 @@ export default function ThinkBar({ cubeState, threeCube, onComplete, onError }: 
 
     run();
     return () => { cancelled = true; };
-  }, [cubeState]);
+  }, [cubeState, threeCube, onComplete, onError]);
 
   const currentPhaseConfig = PHASE_CONFIG[progress.phase - 1] || PHASE_CONFIG[0];
   const PhaseIcon = currentPhaseConfig.icon;
