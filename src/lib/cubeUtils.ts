@@ -62,19 +62,22 @@ export function detectColor(r: number, g: number, b: number): CubeColor {
   const s = hsv.s * 100;
   const v = hsv.v * 100;
 
-  // White: Low saturation, high value
+  // White / grey: low saturation, high brightness
   if (s < 25 && v > 65) return 'white';
-  
-  // High saturation / value colors
-  if (v < 15) return 'blue'; // Very dark
+
+  // Very dark + achromatic: hue is numerically undefined/noisy (e.g. shadows, black plastic).
+  // Saturated dark pixels (e.g. a dark blue sticker) fall through to hue-based rules below.
+  if (v < 15 && s < 25) return 'blue';
 
   if (h < 15 || h > 345) return 'red';
   if (h >= 15 && h < 45) return 'orange';
   if (h >= 45 && h < 65) return 'yellow';
   if (h >= 65 && h < 165) return 'green';
   if (h >= 165 && h < 265) return 'blue';
-  
-  return 'white'; // Fallback
+
+  // Hues 265–345 (purple/magenta range) don't appear on standard cubes;
+  // fall back to white rather than misclassifying.
+  return 'white';
 }
 
 function rgbToHsv(r: number, g: number, b: number) {

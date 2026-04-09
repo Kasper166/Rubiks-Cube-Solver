@@ -29,6 +29,8 @@ interface CanvasOverlayProps {
   editable?: boolean;
   /** Show confidence percentages */
   showConfidence?: boolean;
+  /** Direction the colour-picker popover opens. Default 'above' avoids overflow-hidden clipping. */
+  popoverDirection?: 'above' | 'below';
 }
 
 export default function CanvasOverlay({
@@ -37,6 +39,7 @@ export default function CanvasOverlay({
   onStickerChange,
   editable = true,
   showConfidence = false,
+  popoverDirection = 'above',
 }: CanvasOverlayProps) {
   const [activeCell, setActiveCell] = useState<[number, number] | null>(null);
 
@@ -108,8 +111,12 @@ export default function CanvasOverlay({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -8, scale: 0.95 }}
             transition={{ duration: 0.15 }}
-            className="absolute -bottom-2 left-1/2 -translate-x-1/2 translate-y-full z-20
-                       flex gap-1.5 p-2 rounded-xl glass shadow-2xl border border-white/20"
+            className={`absolute left-1/2 -translate-x-1/2 z-20
+                       flex gap-1.5 p-2 rounded-xl glass shadow-2xl border border-white/20 ${
+                         popoverDirection === 'above'
+                           ? '-top-2 -translate-y-full'
+                           : '-bottom-2 translate-y-full'
+                       }`}
           >
             {COLOR_OPTIONS.map(opt => (
               <button

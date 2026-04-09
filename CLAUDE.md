@@ -64,3 +64,22 @@ src/
 ## Deployment
 
 GitHub Pages at `https://Kasper166.github.io/Rubiks-Cube-Solver/` (base path: `/Rubiks-Cube-Solver/`).
+
+## Change Log
+
+### 2026-04-09 — Bug fixes & debug mode
+**Bug fixes (8 total):**
+- `Scanner.tsx` — Stale closures in `detect()` rAF loop fixed by mirroring state into refs (`facingModeRef`, `manualOverridesRef`, `currentFaceRef`, etc.)
+- `Scanner.tsx` — Canvas now draws only the guide area (not the full stretched frame) so top/bottom row sampling aligns with what the user sees on screen. Uses `videoContainerRef` to compute the guide's position in video-frame coordinates at runtime.
+- `Scanner.tsx` — `facingMode: { ideal: ... }` so laptop cameras (user-facing only) no longer fail to start
+- `CanvasOverlay.tsx` — Color picker popover was clipped by `overflow-hidden` parent; added `popoverDirection` prop (default `'above'`) so it opens upward
+- `cubeUtils.ts` — Dark achromatic pixels (`v < 15 && s < 25`) correctly fall back to `'blue'`; saturated dark pixels now use hue-based classification instead of always returning `'blue'`
+- `solver.worker.ts` — Wrong field name (`solution` → `moves`) in `postMessage` payload
+- `ThinkBarOrchestrator.ts` — Added error logging to silent `worker.onerror` callback
+- `ThinkBar.tsx` — Missing `threeCube`, `onComplete`, `onError` deps in `useEffect`
+- `Verifier.tsx` — `initialState` deep-cloned on init to prevent shared-reference mutations
+- `package.json` / `tsconfig.json` — Removed `@types/jest`, switched to `@testing-library/jest-dom/vitest`, added `skipLibCheck` to fix type conflicts with vitest globals
+- `Solver.tsx` — Move-list buttons now guard against jumping index during animation
+
+**New feature:**
+- `Scanner.tsx` — CV debug mode (`🐛` button): shows the exact image the algorithm samples, sampling points with detected colours, override/forced indicators, unique colour count, and glare %. Useful for diagnosing scan issues on any device.

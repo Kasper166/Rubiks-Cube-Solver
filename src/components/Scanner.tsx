@@ -8,7 +8,7 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Camera, ArrowLeft, ArrowRight, Check, RotateCw, AlertTriangle, Sun } from 'lucide-react';
+import { Camera, ArrowLeft, ArrowRight, Check, RotateCw, AlertTriangle, Sun, Bug } from 'lucide-react';
 import {
   CubeState,
   CubeColor,
@@ -32,6 +32,8 @@ interface ScannerProps {
 export default function Scanner({ onComplete }: ScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const debugCanvasRef = useRef<HTMLCanvasElement>(null);
+  const videoContainerRef = useRef<HTMLDivElement>(null);
 
   const [cameraActive, setCameraActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,6 +47,7 @@ export default function Scanner({ onComplete }: ScannerProps) {
   );
   const [glare, setGlare] = useState<GlareResult | null>(null);
   const [showIntro, setShowIntro] = useState(true);
+  const [debugMode, setDebugMode] = useState(false);
   
   // Auto-capture states — use refs so the rAF loop always reads current values
   const lastFingerprintRef = useRef("");
@@ -75,6 +78,8 @@ export default function Scanner({ onComplete }: ScannerProps) {
   manualOverridesRef.current = manualOverrides;
   const currentFaceRef = useRef(currentFace);
   currentFaceRef.current = currentFace;
+  const debugModeRef = useRef(debugMode);
+  debugModeRef.current = debugMode;
 
   // Toggle camera
   const flipCamera = useCallback(() => {
@@ -87,12 +92,13 @@ export default function Scanner({ onComplete }: ScannerProps) {
     let stream: MediaStream | null = null;
     const startCamera = async () => {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { 
-                facingMode: facingMode,
-                width: { ideal: 1280 },
-                height: { ideal: 720 }
-            } 
+        // Use 'ideal' so laptops (which only have a user-facing camera) don't fail
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: facingMode },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
         });
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
@@ -127,28 +133,61 @@ export default function Scanner({ onComplete }: ScannerProps) {
           const curOverrides = manualOverridesRef.current;
           const curFace = currentFaceRef.current;
 
-          // Draw video to canvas
-          ctx.save();
-          if (curFacingMode === 'user') {
-            // Mirror for user facing camera
-            ctx.translate(canvas.width, 0);
-            ctx.scale(-1, 1);
-          }
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          ctx.restore();
+          // Draw the guide area to canvas so sampling aligns with what the user sees.
+          // The guide box (w-64 = 256px CSS) is centered in the video container.
+          // We compute its position in video-frame coordinates accounting for object-cover.
+          const videoW = video.videoWidth;
+          const videoH = video.videoHeight;
+          const container = videoContainerRef.current;
+          const containerW = container ? container.clientWidth : videoW;
+          const containerH = container ? container.clientHeight : videoH;
 
-          // Glare detection
+          if (videoW > 0 && videoH > 0) {
+            // Compute the video region visible through CSS object-cover
+            const videoAspect = videoW / videoH;
+            const containerAspect = containerW / containerH;
+            let srcX = 0, srcY = 0, srcW = videoW, srcH = videoH;
+            if (videoAspect > containerAspect) {
+              // Landscape video in portrait/square container — crop sides
+              srcW = videoH * containerAspect;
+              srcX = (videoW - srcW) / 2;
+            } else {
+              // Portrait video in landscape container — crop top/bottom
+              srcH = videoW / containerAspect;
+              srcY = (videoH - srcH) / 2;
+            }
+
+            // The CSS guide box (256×256px) is centered in the container
+            const guideCSS = 256;
+            const guideCSSX = (containerW - guideCSS) / 2;
+            const guideCSSY = (containerH - guideCSS) / 2;
+
+            // Map guide box to video-frame coordinates
+            const scaleX = srcW / containerW;
+            const scaleY = srcH / containerH;
+            const guideVX = srcX + guideCSSX * scaleX;
+            const guideVY = srcY + guideCSSY * scaleY;
+            const guideVW = guideCSS * scaleX;
+            const guideVH = guideCSS * scaleY;
+
+            ctx.save();
+            if (curFacingMode === 'user') {
+              ctx.translate(canvas.width, 0);
+              ctx.scale(-1, 1);
+            }
+            // Draw only the guide region → fills the entire 300×300 canvas
+            ctx.drawImage(video, guideVX, guideVY, guideVW, guideVH, 0, 0, canvas.width, canvas.height);
+            ctx.restore();
+          }
+
+          // Glare detection on the guide area
           const fullImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
           const glareResult = detectGlare(fullImageData, 3, 240);
           setGlare(glareResult);
 
-          // Color detection per grid cell
-          // We align the 3x3 sampling grid with a 256x256 theoretical guide
-          // centered in the 300x300 processing canvas.
-          // Guide bounds: 22 to 278 (assuming centered)
-          const guideSize = 256;
-          const offset = (canvas.width - guideSize) / 2; // ~22
-          const boxSize = guideSize / 3; // ~85.33
+          // Color detection: canvas now represents the guide area exactly.
+          // Divide into a uniform 3×3 grid — each cell is 100×100px in the canvas.
+          const boxSize = canvas.width / 3; // 100px
 
           const gridColors: CubeColor[][] = [];
           for (let r = 0; r < 3; r++) {
@@ -174,9 +213,9 @@ export default function Scanner({ onComplete }: ScannerProps) {
                 continue;
               }
 
-              const x = offset + c * boxSize + boxSize / 2;
-              const y = offset + r * boxSize + boxSize / 2;
-              const sampleSize = 12; // Slightly smaller sample for better precision
+              const x = c * boxSize + boxSize / 2;
+              const y = r * boxSize + boxSize / 2;
+              const sampleSize = 12;
               const data = ctx.getImageData(x - sampleSize/2, y - sampleSize/2, sampleSize, sampleSize).data;
 
               let red = 0, g = 0, b = 0;
@@ -189,6 +228,66 @@ export default function Scanner({ onComplete }: ScannerProps) {
             gridColors.push(row);
           }
           setRealTimeColors(gridColors);
+
+          // ── Debug canvas: visualise what the CV algorithm sees ──────────
+          if (debugModeRef.current && debugCanvasRef.current) {
+            const dc = debugCanvasRef.current;
+            const dctx = dc.getContext('2d');
+            if (dctx) {
+              dc.width = 300;
+              dc.height = 300;
+              // Copy the processed (guide-area) image
+              dctx.drawImage(canvas, 0, 0);
+
+              const cellPx = 100; // canvas.width / 3
+              for (let dr = 0; dr < 3; dr++) {
+                for (let dc2 = 0; dc2 < 3; dc2++) {
+                  const cx = dc2 * cellPx + cellPx / 2;
+                  const cy = dr * cellPx + cellPx / 2;
+                  const detectedColor = gridColors[dr][dc2];
+                  const hex = COLOR_MAP[detectedColor];
+                  const isOverride = !!curOverrides[dr][dc2];
+                  const isForced = dr === 1 && dc2 === 1;
+
+                  // Semi-transparent tint per cell
+                  dctx.fillStyle = hex + '44';
+                  dctx.fillRect(dc2 * cellPx, dr * cellPx, cellPx, cellPx);
+
+                  // Sampling circle
+                  dctx.beginPath();
+                  dctx.arc(cx, cy, 18, 0, Math.PI * 2);
+                  dctx.fillStyle = hex;
+                  dctx.fill();
+                  dctx.strokeStyle = isOverride ? '#facc15' : isForced ? '#a78bfa' : 'white';
+                  dctx.lineWidth = isOverride || isForced ? 3 : 2;
+                  dctx.stroke();
+
+                  // Color abbreviation inside circle
+                  dctx.fillStyle = detectedColor === 'white' || detectedColor === 'yellow' ? '#000' : '#fff';
+                  dctx.font = 'bold 9px monospace';
+                  dctx.textAlign = 'center';
+                  dctx.textBaseline = 'middle';
+                  dctx.fillText(detectedColor.slice(0, 3).toUpperCase(), cx, cy);
+
+                  // Badge: override / forced indicator
+                  if (isOverride || isForced) {
+                    dctx.font = 'bold 7px monospace';
+                    dctx.fillStyle = isOverride ? '#facc15' : '#a78bfa';
+                    dctx.fillText(isOverride ? 'OVR' : 'FXD', cx, cy + 26);
+                  }
+                }
+              }
+
+              // Grid lines
+              dctx.strokeStyle = 'rgba(255,255,255,0.5)';
+              dctx.lineWidth = 1;
+              for (let i = 1; i < 3; i++) {
+                dctx.beginPath(); dctx.moveTo(i * cellPx, 0); dctx.lineTo(i * cellPx, 300); dctx.stroke();
+                dctx.beginPath(); dctx.moveTo(0, i * cellPx); dctx.lineTo(300, i * cellPx); dctx.stroke();
+              }
+            }
+          }
+          // ────────────────────────────────────────────────────────────────
 
           // Auto-capture detection (using refs for current values)
           const fingerprint = gridColors.flat().join("");
@@ -269,6 +368,13 @@ export default function Scanner({ onComplete }: ScannerProps) {
           </div>
           <div className="flex gap-2">
             <button
+              onClick={() => setDebugMode(d => !d)}
+              className={`p-2 rounded-xl transition-colors ${debugMode ? 'bg-amber-500/30 text-amber-400' : 'bg-white/10 hover:bg-white/20 text-white'}`}
+              title="Toggle CV debug mode"
+            >
+              <Bug className="w-4 h-4" />
+            </button>
+            <button
               onClick={flipCamera}
               className="p-2 bg-white/10 hover:bg-white/20 rounded-xl transition-colors"
               title="Flip Camera"
@@ -293,7 +399,7 @@ export default function Scanner({ onComplete }: ScannerProps) {
         </div>
 
         {/* Video Area */}
-        <div className="relative flex-1 min-h-[350px] lg:min-h-0 bg-black rounded-2xl overflow-hidden group">
+        <div ref={videoContainerRef} className="relative flex-1 min-h-[350px] lg:min-h-0 bg-black rounded-2xl overflow-hidden group">
           <video
             ref={videoRef}
             autoPlay
@@ -373,6 +479,96 @@ export default function Scanner({ onComplete }: ScannerProps) {
             )}
           </AnimatePresence>
         </div>
+
+        {/* ── Debug Panel ─────────────────────────────────────────────── */}
+        <AnimatePresence>
+          {debugMode && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              className="mt-4 overflow-hidden"
+            >
+              <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/20">
+                <div className="flex items-center gap-2 mb-3">
+                  <Bug className="w-4 h-4 text-amber-400" />
+                  <span className="text-xs font-bold text-amber-400 uppercase tracking-widest">CV Debug Mode</span>
+                  <span className="ml-auto text-[10px] text-zinc-500">
+                    <span className="text-white/40">●</span> sampled &nbsp;
+                    <span className="text-amber-400">●</span> override &nbsp;
+                    <span className="text-violet-400">●</span> forced
+                  </span>
+                </div>
+                <div className="flex gap-4 items-start">
+                  {/* Debug canvas — what the CV algorithm actually processes */}
+                  <div className="shrink-0">
+                    <p className="text-[9px] text-zinc-500 font-bold uppercase tracking-widest mb-1 text-center">What CV sees</p>
+                    <canvas
+                      ref={debugCanvasRef}
+                      width={180}
+                      height={180}
+                      className="rounded-xl border border-white/10"
+                      style={{ imageRendering: 'pixelated' }}
+                    />
+                  </div>
+
+                  {/* Detected colour grid with names */}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[9px] text-zinc-500 font-bold uppercase tracking-widest mb-2 text-center">Detected colours</p>
+                    <div className="grid grid-cols-3 gap-1">
+                      {realTimeColors.flat().map((color, i) => {
+                        const row = Math.floor(i / 3);
+                        const col = i % 3;
+                        const isOverride = !!manualOverrides[row][col];
+                        const isForced = row === 1 && col === 1;
+                        return (
+                          <div
+                            key={i}
+                            className="flex flex-col items-center gap-0.5 p-1 rounded-lg border"
+                            style={{
+                              backgroundColor: COLOR_MAP[color] + '22',
+                              borderColor: isOverride ? '#facc15' : isForced ? '#a78bfa' : COLOR_MAP[color] + '66',
+                            }}
+                          >
+                            <div
+                              className="w-4 h-4 rounded-sm shadow"
+                              style={{ backgroundColor: COLOR_MAP[color] }}
+                            />
+                            <span className="text-[8px] font-mono font-bold text-zinc-300 leading-none">
+                              {color.slice(0, 3).toUpperCase()}
+                            </span>
+                            {isOverride && <span className="text-[7px] text-amber-400 leading-none">OVR</span>}
+                            {isForced && <span className="text-[7px] text-violet-400 leading-none">FXD</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Face + stability info */}
+                    <div className="mt-2 space-y-1">
+                      <div className="flex justify-between text-[9px]">
+                        <span className="text-zinc-500">Scanning face</span>
+                        <span className="font-mono font-bold text-white">{currentFace} — {FACE_LABELS[currentFace].split('(')[1]?.replace(')', '') ?? ''}</span>
+                      </div>
+                      <div className="flex justify-between text-[9px]">
+                        <span className="text-zinc-500">Unique colours</span>
+                        <span className={`font-mono font-bold ${new Set(realTimeColors.flat()).size >= 2 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {new Set(realTimeColors.flat()).size} / 6
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-[9px]">
+                        <span className="text-zinc-500">Glare</span>
+                        <span className={`font-mono font-bold ${glare?.hasGlare ? 'text-amber-400' : 'text-emerald-400'}`}>
+                          {glare ? `${Math.round(glare.intensity * 100)}%` : '—'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Action Buttons */}
         <div className="mt-6 flex gap-4">
