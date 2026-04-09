@@ -8,7 +8,7 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Camera, ArrowLeft, ArrowRight, Check, RotateCw, AlertTriangle, Sun, Bug } from 'lucide-react';
+import { Camera, ArrowLeft, ArrowRight, Check, RotateCw, AlertTriangle, Sun, Bug, SwitchCamera } from 'lucide-react';
 import {
   CubeState,
   CubeColor,
@@ -427,7 +427,7 @@ export default function Scanner({ onComplete }: ScannerProps) {
           {/* Rotation Arrow */}
           <AnimatePresence>
             {!showIntro && currentFaceIndex > 0 && stabilityStartRef.current && (Date.now() - stabilityStartRef.current < 3000) && (
-              <RotationArrow alg={guidance.alg} />
+              <RotationArrow alg={guidance.alg} facingMode={facingMode} />
             )}
           </AnimatePresence>
 
@@ -651,21 +651,52 @@ export default function Scanner({ onComplete }: ScannerProps) {
             <motion.div
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
-              className="max-w-sm"
+              className="max-w-sm w-full"
             >
               <div className="w-20 h-20 bg-blue-500/20 rounded-3xl flex items-center justify-center mb-6 mx-auto">
                 <Camera className="w-10 h-10 text-blue-400" />
               </div>
-              <h2 className="text-2xl font-heading font-bold mb-3">Scanning Guide</h2>
-              <p className="text-zinc-400 mb-8">
-                Place your Rubik's Cube flat on a stable surface. Ensure good lighting and avoid reflections for the best color accuracy.
+              <h2 className="text-2xl font-heading font-bold mb-2">Choose Your Camera</h2>
+              <p className="text-zinc-400 text-sm mb-8">
+                The rotation arrows will adapt to your camera direction.
               </p>
-              <button
-                onClick={() => setShowIntro(false)}
-                className="btn-primary w-full py-4 text-lg font-bold shadow-xl shadow-blue-500/20"
-              >
-                Got it, Start Scanning
-              </button>
+
+              {/* Camera picker */}
+              <div className="grid grid-cols-2 gap-3 mb-6">
+                <button
+                  onClick={() => { setFacingMode('environment'); setShowIntro(false); }}
+                  className={`flex flex-col items-center gap-3 p-5 rounded-2xl border-2 transition-all ${
+                    facingMode === 'environment'
+                      ? 'border-blue-500 bg-blue-500/20 text-white'
+                      : 'border-white/10 bg-white/5 text-zinc-400 hover:border-white/30 hover:bg-white/10'
+                  }`}
+                >
+                  <Camera className="w-8 h-8" />
+                  <div className="text-left">
+                    <p className="font-bold text-sm leading-tight">Back Camera</p>
+                    <p className="text-[11px] text-zinc-500 mt-0.5 leading-snug">Point phone at the cube</p>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => { setFacingMode('user'); setShowIntro(false); }}
+                  className={`flex flex-col items-center gap-3 p-5 rounded-2xl border-2 transition-all ${
+                    facingMode === 'user'
+                      ? 'border-violet-500 bg-violet-500/20 text-white'
+                      : 'border-white/10 bg-white/5 text-zinc-400 hover:border-white/30 hover:bg-white/10'
+                  }`}
+                >
+                  <SwitchCamera className="w-8 h-8" />
+                  <div className="text-left">
+                    <p className="font-bold text-sm leading-tight">Front Camera</p>
+                    <p className="text-[11px] text-zinc-500 mt-0.5 leading-snug">Hold cube facing you</p>
+                  </div>
+                </button>
+              </div>
+
+              <p className="text-[11px] text-zinc-600">
+                You can switch cameras at any time using the button in the top right.
+              </p>
             </motion.div>
           </motion.div>
         )}
@@ -674,20 +705,23 @@ export default function Scanner({ onComplete }: ScannerProps) {
   );
 }
 
-function RotationArrow({ alg }: { alg: string }) {
+function RotationArrow({ alg, facingMode }: { alg: string; facingMode: 'user' | 'environment' }) {
   if (!alg) return null;
+
+  // For front camera the user faces the lens, so left/right are physically mirrored.
+  const flip = facingMode === 'user';
 
   let rotationClass = "";
   let icon = <ArrowRight className="w-12 h-12" />;
 
   if (alg === "x") {
-    rotationClass = "-rotate-90"; // UP (Bottom -> Front)
+    rotationClass = "-rotate-90"; // UP — same for both cameras
   } else if (alg === "x'") {
-    rotationClass = "rotate-90"; // DOWN (Top -> Front)
+    rotationClass = "rotate-90";  // DOWN — same for both cameras
   } else if (alg === "y") {
-    rotationClass = "rotate-180"; // LEFT (Right -> Front)
+    rotationClass = flip ? "rotate-0" : "rotate-180"; // back→left, front→right
   } else if (alg === "y'") {
-    rotationClass = "rotate-0"; // RIGHT (Left -> Front)
+    rotationClass = flip ? "rotate-180" : "rotate-0"; // back→right, front→left
   }
 
   return (
