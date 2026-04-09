@@ -8,7 +8,7 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Camera, ArrowLeft, ArrowRight, Check, RotateCw, AlertTriangle, Sun, Bug, SwitchCamera } from 'lucide-react';
+import { Camera, ArrowLeft, ArrowRight, Check, RotateCw, AlertTriangle, Sun, Bug, SwitchCamera, Pause, Play } from 'lucide-react';
 import {
   CubeState,
   CubeColor,
@@ -29,6 +29,20 @@ interface ScannerProps {
   onComplete: (state: CubeState) => void;
 }
 
+// ── Calibration types ────────────────────────────────────────────────────────
+type CalHSV = { h: number; s: number; v: number }; // h: 0-360, s/v: 0-100
+type CalibrationData = Partial<Record<CubeColor, CalHSV>>;
+
+const CAL_ORDER: CubeColor[] = ['white', 'yellow', 'red', 'orange', 'green', 'blue'];
+const CAL_LABELS: Record<CubeColor, string> = {
+  white:  'White  — point at the Top face center',
+  yellow: 'Yellow — point at the Bottom face center',
+  red:    'Red    — point at the Right face center',
+  orange: 'Orange — point at the Left face center',
+  green:  'Green  — point at the Front face center',
+  blue:   'Blue   — point at the Back face center',
+};
+
 export default function Scanner({ onComplete }: ScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -46,9 +60,25 @@ export default function Scanner({ onComplete }: ScannerProps) {
     Array(3).fill(null).map(() => Array(3).fill(null))
   );
   const [glare, setGlare] = useState<GlareResult | null>(null);
-  const [showIntro, setShowIntro] = useState(true);
+  const [introStep, setIntroStep] = useState<'camera' | 'calibrate' | null>('camera');
+  const introStepRef = useRef<'camera' | 'calibrate' | null>('camera');
+  introStepRef.current = introStep;
   const [debugMode, setDebugMode] = useState(false);
-  
+  const [cubeDetected, setCubeDetected] = useState(false);
+  const cubeDetectedRef = useRef(false);
+
+  // ── Calibration state ────────────────────────────────────────────────────
+  const [calibration, setCalibration] = useState<CalibrationData>({});
+  const calibrationRef = useRef<CalibrationData>({});
+  calibrationRef.current = calibration;
+  const [calColorIndex, setCalColorIndex] = useState(0);
+  // Live preview of what the camera centre sees (hex), updated by rAF during calibration
+  const [calLiveHex, setCalLiveHex] = useState<string>('#888888');
+  // Pause flag: freezes the canvas frame during calibration so the user can aim carefully
+  const [calPaused, setCalPaused] = useState(false);
+  const calPausedRef = useRef(false);
+  calPausedRef.current = calPaused;
+
   // Auto-capture states — use refs so the rAF loop always reads current values
   const lastFingerprintRef = useRef("");
   const stabilityStartRef = useRef<number | null>(null);
@@ -170,14 +200,17 @@ export default function Scanner({ onComplete }: ScannerProps) {
             const guideVW = guideCSS * scaleX;
             const guideVH = guideCSS * scaleY;
 
-            ctx.save();
-            if (curFacingMode === 'user') {
-              ctx.translate(canvas.width, 0);
-              ctx.scale(-1, 1);
+            // Skip redraw when calibration is paused — keeps the frozen frame on canvas
+            if (!(introStepRef.current === 'calibrate' && calPausedRef.current)) {
+              ctx.save();
+              if (curFacingMode === 'user') {
+                ctx.translate(canvas.width, 0);
+                ctx.scale(-1, 1);
+              }
+              // Draw only the guide region → fills the entire 300×300 canvas
+              ctx.drawImage(video, guideVX, guideVY, guideVW, guideVH, 0, 0, canvas.width, canvas.height);
+              ctx.restore();
             }
-            // Draw only the guide region → fills the entire 300×300 canvas
-            ctx.drawImage(video, guideVX, guideVY, guideVW, guideVH, 0, 0, canvas.width, canvas.height);
-            ctx.restore();
           }
 
           // Glare detection on the guide area
@@ -185,9 +218,32 @@ export default function Scanner({ onComplete }: ScannerProps) {
           const glareResult = detectGlare(fullImageData, 3, 240);
           setGlare(glareResult);
 
+          // Cube face recognition: check for dark sticker borders at 1/3 and 2/3 marks
+          const detected = assessCubeFaceConfidence(ctx) > 0.5;
+          if (detected !== cubeDetectedRef.current) {
+            cubeDetectedRef.current = detected;
+            setCubeDetected(detected);
+          }
+
+          // ── Calibration live preview ─────────────────────────────────────
+          // During the calibration phase, sample the canvas centre (40×40px) so
+          // the UI can show the user exactly what colour the camera currently sees.
+          // Skip when paused so the swatch stays frozen.
+          if (introStepRef.current === 'calibrate' && !calPausedRef.current) {
+            const cx = canvas.width / 2, cy = canvas.height / 2, sz = 40;
+            const d = ctx.getImageData(cx - sz / 2, cy - sz / 2, sz, sz).data;
+            let cr = 0, cg = 0, cb = 0;
+            for (let i = 0; i < d.length; i += 4) { cr += d[i]; cg += d[i + 1]; cb += d[i + 2]; }
+            const n = d.length / 4;
+            const toHex = (x: number) => Math.round(x / n).toString(16).padStart(2, '0');
+            setCalLiveHex(`#${toHex(cr)}${toHex(cg)}${toHex(cb)}`);
+          }
+
           // Color detection: canvas now represents the guide area exactly.
           // Divide into a uniform 3×3 grid — each cell is 100×100px in the canvas.
           const boxSize = canvas.width / 3; // 100px
+          const curCalibration = calibrationRef.current;
+          const calComplete = CAL_ORDER.every(c => curCalibration[c] != null);
 
           const gridColors: CubeColor[][] = [];
           for (let r = 0; r < 3; r++) {
@@ -223,7 +279,11 @@ export default function Scanner({ onComplete }: ScannerProps) {
                 red += data[i]; g += data[i + 1]; b += data[i + 2];
               }
               const count = data.length / 4;
-              row.push(detectColor(red / count, g / count, b / count));
+              // Use calibrated nearest-neighbour when calibration is complete
+              const color = calComplete
+                ? detectColorCalibrated(red / count, g / count, b / count, curCalibration as Record<CubeColor, CalHSV>)
+                : detectColor(red / count, g / count, b / count);
+              row.push(color);
             }
             gridColors.push(row);
           }
@@ -295,9 +355,8 @@ export default function Scanner({ onComplete }: ScannerProps) {
             lastFingerprintRef.current = fingerprint;
             stabilityStartRef.current = Date.now();
           } else if (stabilityStartRef.current && Date.now() - stabilityStartRef.current > 1200) {
-            // Stable for 1.2s - check if it's a new face
-            if (curFace !== lastCapturedFaceRef.current) {
-               // We trigger capture only if the colors are diverse enough
+            // Stable for 1.2s — only capture if cube face is recognised and colors are diverse
+            if (curFace !== lastCapturedFaceRef.current && cubeDetectedRef.current) {
                const uniqueColors = new Set(gridColors.flat()).size;
                if (uniqueColors >= 2) {
                  captureFaceRef.current();
@@ -410,23 +469,37 @@ export default function Scanner({ onComplete }: ScannerProps) {
           <canvas ref={canvasRef} className="hidden" />
 
           {/* Scan Guide Overlay */}
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className="w-64 h-64 border-2 border-white/30 rounded-3xl relative">
-              <div className="absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 border-white rounded-tl-xl" />
-              <div className="absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 border-white rounded-tr-xl" />
-              <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 border-white rounded-bl-xl" />
-              <div className="absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 border-white rounded-br-xl" />
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none gap-2">
+            <div
+              className={`w-64 h-64 border-2 rounded-3xl relative transition-all duration-300 ${
+                cubeDetected
+                  ? 'border-emerald-400/80 shadow-[0_0_20px_2px_rgba(52,211,153,0.25)]'
+                  : 'border-white/30'
+              }`}
+            >
+              <div className={`absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 rounded-tl-xl transition-colors duration-300 ${cubeDetected ? 'border-emerald-400' : 'border-white'}`} />
+              <div className={`absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 rounded-tr-xl transition-colors duration-300 ${cubeDetected ? 'border-emerald-400' : 'border-white'}`} />
+              <div className={`absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 rounded-bl-xl transition-colors duration-300 ${cubeDetected ? 'border-emerald-400' : 'border-white'}`} />
+              <div className={`absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 rounded-br-xl transition-colors duration-300 ${cubeDetected ? 'border-emerald-400' : 'border-white'}`} />
               {/* Grid lines */}
               <div className="absolute left-1/3 top-0 bottom-0 w-px bg-white/15" />
               <div className="absolute left-2/3 top-0 bottom-0 w-px bg-white/15" />
               <div className="absolute top-1/3 left-0 right-0 h-px bg-white/15" />
               <div className="absolute top-2/3 left-0 right-0 h-px bg-white/15" />
             </div>
+            {/* Detection status label */}
+            <div className={`px-3 py-1 rounded-full text-[11px] font-bold backdrop-blur-sm transition-all duration-300 ${
+              cubeDetected
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                : 'bg-black/30 text-zinc-500 border border-white/10'
+            }`}>
+              {cubeDetected ? '✓ Cube detected — hold still' : 'Align cube face in frame'}
+            </div>
           </div>
 
           {/* Rotation Arrow */}
           <AnimatePresence>
-            {!showIntro && currentFaceIndex > 0 && stabilityStartRef.current && (Date.now() - stabilityStartRef.current < 3000) && (
+            {introStep === null && currentFaceIndex > 0 && stabilityStartRef.current && (Date.now() - stabilityStartRef.current < 3000) && (
               <RotationArrow alg={guidance.alg} facingMode={facingMode} />
             )}
           </AnimatePresence>
@@ -639,20 +712,19 @@ export default function Scanner({ onComplete }: ScannerProps) {
         </div>
       </div>
 
-      {/* Intro Overlay */}
-      <AnimatePresence>
-        {showIntro && (
+      {/* ── Step overlays (camera picker → calibration) ───────────────────── */}
+      <AnimatePresence mode="wait">
+
+        {/* Step 1: Camera picker */}
+        {introStep === 'camera' && (
           <motion.div
+            key="camera-picker"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="absolute inset-0 z-50 bg-zinc-950/90 backdrop-blur-md flex flex-col items-center justify-center p-8 text-center"
           >
-            <motion.div
-              initial={{ scale: 0.9, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              className="max-w-sm w-full"
-            >
+            <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} className="max-w-sm w-full">
               <div className="w-20 h-20 bg-blue-500/20 rounded-3xl flex items-center justify-center mb-6 mx-auto">
                 <Camera className="w-10 h-10 text-blue-400" />
               </div>
@@ -660,11 +732,9 @@ export default function Scanner({ onComplete }: ScannerProps) {
               <p className="text-zinc-400 text-sm mb-8">
                 The rotation arrows will adapt to your camera direction.
               </p>
-
-              {/* Camera picker */}
               <div className="grid grid-cols-2 gap-3 mb-6">
                 <button
-                  onClick={() => { setFacingMode('environment'); setShowIntro(false); }}
+                  onClick={() => { setFacingMode('environment'); setIntroStep('calibrate'); }}
                   className={`flex flex-col items-center gap-3 p-5 rounded-2xl border-2 transition-all ${
                     facingMode === 'environment'
                       ? 'border-blue-500 bg-blue-500/20 text-white'
@@ -677,9 +747,8 @@ export default function Scanner({ onComplete }: ScannerProps) {
                     <p className="text-[11px] text-zinc-500 mt-0.5 leading-snug">Point phone at the cube</p>
                   </div>
                 </button>
-
                 <button
-                  onClick={() => { setFacingMode('user'); setShowIntro(false); }}
+                  onClick={() => { setFacingMode('user'); setIntroStep('calibrate'); }}
                   className={`flex flex-col items-center gap-3 p-5 rounded-2xl border-2 transition-all ${
                     facingMode === 'user'
                       ? 'border-violet-500 bg-violet-500/20 text-white'
@@ -693,16 +762,234 @@ export default function Scanner({ onComplete }: ScannerProps) {
                   </div>
                 </button>
               </div>
-
               <p className="text-[11px] text-zinc-600">
                 You can switch cameras at any time using the button in the top right.
               </p>
             </motion.div>
           </motion.div>
         )}
+
+        {/* Step 2: Color calibration */}
+        {introStep === 'calibrate' && (() => {
+          const currentCalColor = CAL_ORDER[calColorIndex];
+          const sampledCount = CAL_ORDER.filter(c => calibration[c] != null).length;
+          const expectedHex = COLOR_MAP[currentCalColor];
+
+          const sampleCurrentColor = () => {
+            if (!canvasRef.current) return;
+            const ctx2 = canvasRef.current.getContext('2d', { willReadFrequently: true });
+            if (!ctx2) return;
+            const cx = 150, cy = 150, sz = 40;
+            const d = ctx2.getImageData(cx - sz / 2, cy - sz / 2, sz, sz).data;
+            let r = 0, g = 0, b = 0;
+            for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; }
+            const n = d.length / 4;
+            const hsv = rgbToHsvPublic(r / n, g / n, b / n);
+            const newCal = { ...calibration, [currentCalColor]: hsv };
+            setCalibration(newCal);
+            setCalPaused(false); // resume for the next color
+            if (calColorIndex < CAL_ORDER.length - 1) {
+              setCalColorIndex(i => i + 1);
+            } else {
+              setIntroStep(null);
+            }
+          };
+
+          return (
+            <motion.div
+              key="calibration"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 z-50 bg-zinc-950/85 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center"
+            >
+              <motion.div initial={{ scale: 0.95, y: 16 }} animate={{ scale: 1, y: 0 }} className="max-w-xs w-full">
+                {/* Progress dots */}
+                <div className="flex justify-center gap-1.5 mb-6">
+                  {CAL_ORDER.map((c, i) => (
+                    <div
+                      key={c}
+                      className="w-2 h-2 rounded-full transition-all duration-300"
+                      style={{
+                        backgroundColor: i < sampledCount ? COLOR_MAP[c] : i === calColorIndex ? COLOR_MAP[c] + '80' : 'rgba(255,255,255,0.15)',
+                        transform: i === calColorIndex ? 'scale(1.4)' : 'scale(1)',
+                      }}
+                    />
+                  ))}
+                </div>
+
+                <p className="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-1">
+                  Color {calColorIndex + 1} of {CAL_ORDER.length}
+                </p>
+                <h2 className="text-xl font-heading font-bold mb-1 capitalize">{currentCalColor}</h2>
+                <p className="text-zinc-400 text-sm mb-6">{CAL_LABELS[currentCalColor]}</p>
+
+                {/* Live vs expected swatches */}
+                <div className="flex items-center justify-center gap-4 mb-6">
+                  <div className="flex flex-col items-center gap-1.5">
+                    <div
+                      className="w-16 h-16 rounded-2xl border-2 border-white/20 shadow-lg transition-colors duration-100"
+                      style={{ backgroundColor: calLiveHex }}
+                    />
+                    <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">Camera sees</span>
+                  </div>
+                  <div className="text-zinc-600 text-lg font-bold">vs</div>
+                  <div className="flex flex-col items-center gap-1.5">
+                    <div
+                      className="w-16 h-16 rounded-2xl border-2 border-white/20 shadow-lg"
+                      style={{ backgroundColor: expectedHex }}
+                    />
+                    <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">Expected</span>
+                  </div>
+                </div>
+
+                {/* Pause / Resume + hint */}
+                <div className="flex items-center justify-center gap-3 mb-5">
+                  <button
+                    onClick={() => setCalPaused(p => !p)}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-xl border text-sm font-bold transition-all ${
+                      calPaused
+                        ? 'border-amber-500/60 bg-amber-500/20 text-amber-300'
+                        : 'border-white/15 bg-white/5 text-zinc-400 hover:border-white/30'
+                    }`}
+                  >
+                    {calPaused
+                      ? <><Play  className="w-4 h-4" /> Resume</>
+                      : <><Pause className="w-4 h-4" /> Freeze frame</>
+                    }
+                  </button>
+                  <p className="text-[11px] text-zinc-600 text-left leading-snug">
+                    Freeze, aim at the sticker,<br />then tap Sample.
+                  </p>
+                </div>
+
+                <button
+                  onClick={sampleCurrentColor}
+                  className="btn-primary w-full py-4 text-base font-bold mb-3"
+                  style={{ boxShadow: `0 0 20px 2px ${expectedHex}40` }}
+                >
+                  Sample this color
+                </button>
+                <button
+                  onClick={() => setIntroStep(null)}
+                  className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors py-2"
+                >
+                  Skip calibration →
+                </button>
+              </motion.div>
+            </motion.div>
+          );
+        })()}
+
       </AnimatePresence>
     </div>
   );
+}
+
+// ── Calibration helpers ──────────────────────────────────────────────────────
+
+/** Converts RGB (0-255) to HSV with h: 0-360, s/v: 0-100. */
+function rgbToHsvPublic(r: number, g: number, b: number): CalHSV {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  let h = 0;
+  if (d !== 0) {
+    switch (max) {
+      case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+      case g: h = ((b - r) / d + 2) / 6; break;
+      case b: h = ((r - g) / d + 4) / 6; break;
+    }
+  }
+  return { h: h * 360, s: max === 0 ? 0 : (d / max) * 100, v: max * 100 };
+}
+
+/**
+ * Nearest-neighbour color classifier using calibrated HSV reference points.
+ * Hue distance is weighted highest (most discriminative); saturation helps
+ * separate white from chromatic; value is least weighted (lighting variance).
+ */
+function detectColorCalibrated(
+  r: number, g: number, b: number,
+  cal: Record<CubeColor, CalHSV>,
+): CubeColor {
+  const { h, s, v } = rgbToHsvPublic(r, g, b);
+  let best: CubeColor = 'white';
+  let bestDist = Infinity;
+  for (const color of CAL_ORDER) {
+    const ref = cal[color];
+    if (!ref) continue;
+    const dh = Math.min(Math.abs(h - ref.h), 360 - Math.abs(h - ref.h));
+    const ds = Math.abs(s - ref.s);
+    const dv = Math.abs(v - ref.v);
+    const dist = dh * 2.0 + ds * 0.8 + dv * 0.3;
+    if (dist < bestDist) { bestDist = dist; best = color; }
+  }
+  return best;
+}
+
+/**
+ * Estimates the probability that the canvas contains a Rubik's cube face.
+ *
+ * Strategy: a cube face has black plastic borders between stickers.
+ * These borders appear at the 1/3 and 2/3 marks of the 300×300 canvas.
+ * We compare the brightness of those border strips vs the cell centres.
+ * Dark borders + bright cells + clear contrast → high confidence.
+ */
+function assessCubeFaceConfidence(ctx: CanvasRenderingContext2D): number {
+  const W = 300;
+  const step = W / 3; // 100 — border positions
+
+  let borderBrightness = 0, borderCount = 0;
+  let cellBrightness = 0, cellCount = 0;
+
+  // Sample vertical border strips at x ≈ 100 and x ≈ 200
+  for (const bx of [step, step * 2]) {
+    for (let s = 0; s < 8; s++) {
+      const y = Math.round((s + 0.5) * W / 8);
+      // Skip pixels near horizontal border crossings (noisy corners)
+      if (Math.abs(y - step) < 10 || Math.abs(y - step * 2) < 10) continue;
+      const d = ctx.getImageData(bx - 2, y, 5, 1).data;
+      for (let i = 0; i < d.length; i += 4) {
+        borderBrightness += (d[i] + d[i + 1] + d[i + 2]) / 3;
+        borderCount++;
+      }
+    }
+  }
+
+  // Sample horizontal border strips at y ≈ 100 and y ≈ 200
+  for (const by of [step, step * 2]) {
+    for (let s = 0; s < 8; s++) {
+      const x = Math.round((s + 0.5) * W / 8);
+      if (Math.abs(x - step) < 10 || Math.abs(x - step * 2) < 10) continue;
+      const d = ctx.getImageData(x, by - 2, 1, 5).data;
+      for (let i = 0; i < d.length; i += 4) {
+        borderBrightness += (d[i] + d[i + 1] + d[i + 2]) / 3;
+        borderCount++;
+      }
+    }
+  }
+
+  // Sample 12×12 patch at each of the 9 cell centres
+  for (let row = 0; row < 3; row++) {
+    for (let col = 0; col < 3; col++) {
+      const cx = Math.round(col * step + step / 2);
+      const cy = Math.round(row * step + step / 2);
+      const d = ctx.getImageData(cx - 6, cy - 6, 12, 12).data;
+      for (let i = 0; i < d.length; i += 4) {
+        cellBrightness += (d[i] + d[i + 1] + d[i + 2]) / 3;
+        cellCount++;
+      }
+    }
+  }
+
+  const avgBorder = borderCount > 0 ? borderBrightness / borderCount : 255;
+  const avgCell   = cellCount   > 0 ? cellBrightness   / cellCount   : 0;
+
+  // Border should be dark (plastic frame), cells should be brighter (coloured stickers)
+  const borderDarkScore  = Math.max(0, 1 - avgBorder / 90);       // full score when avgBorder < ~45
+  const contrastScore    = Math.max(0, Math.min(1, (avgCell - avgBorder) / 80)); // needs 80+ gap
+
+  return borderDarkScore * 0.55 + contrastScore * 0.45;
 }
 
 function RotationArrow({ alg, facingMode }: { alg: string; facingMode: 'user' | 'environment' }) {
