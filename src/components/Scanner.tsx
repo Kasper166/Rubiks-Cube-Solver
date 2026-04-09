@@ -8,7 +8,7 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Camera, ArrowLeft, ArrowRight, Check, RotateCw, AlertTriangle, Sun, Bug, SwitchCamera, Pause, Play } from 'lucide-react';
+import { Camera, ArrowLeft, ArrowRight, Check, RotateCw, AlertTriangle, Sun, Bug, SwitchCamera, Pause } from 'lucide-react';
 import {
   CubeState,
   CubeColor,
@@ -34,14 +34,6 @@ type CalHSV = { h: number; s: number; v: number }; // h: 0-360, s/v: 0-100
 type CalibrationData = Partial<Record<CubeColor, CalHSV>>;
 
 const CAL_ORDER: CubeColor[] = ['white', 'yellow', 'red', 'orange', 'green', 'blue'];
-const CAL_LABELS: Record<CubeColor, string> = {
-  white:  'White  — point at the Top face center',
-  yellow: 'Yellow — point at the Bottom face center',
-  red:    'Red    — point at the Right face center',
-  orange: 'Orange — point at the Left face center',
-  green:  'Green  — point at the Front face center',
-  blue:   'Blue   — point at the Back face center',
-};
 
 export default function Scanner({ onComplete }: ScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -60,24 +52,23 @@ export default function Scanner({ onComplete }: ScannerProps) {
     Array(3).fill(null).map(() => Array(3).fill(null))
   );
   const [glare, setGlare] = useState<GlareResult | null>(null);
-  const [introStep, setIntroStep] = useState<'camera' | 'calibrate' | null>('camera');
-  const introStepRef = useRef<'camera' | 'calibrate' | null>('camera');
-  introStepRef.current = introStep;
+  const [showIntro, setShowIntro] = useState(true);
   const [debugMode, setDebugMode] = useState(false);
   const [cubeDetected, setCubeDetected] = useState(false);
   const cubeDetectedRef = useRef(false);
 
   // ── Calibration state ────────────────────────────────────────────────────
+  // Built up incrementally as the user manually corrects stickers during scanning.
   const [calibration, setCalibration] = useState<CalibrationData>({});
   const calibrationRef = useRef<CalibrationData>({});
   calibrationRef.current = calibration;
-  const [calColorIndex, setCalColorIndex] = useState(0);
-  // Live preview of what the camera centre sees (hex), updated by rAF during calibration
-  const [calLiveHex, setCalLiveHex] = useState<string>('#888888');
-  // Pause flag: freezes the canvas frame during calibration so the user can aim carefully
-  const [calPaused, setCalPaused] = useState(false);
-  const calPausedRef = useRef(false);
-  calPausedRef.current = calPaused;
+
+  // ── Frame-freeze state ───────────────────────────────────────────────────
+  // Freezes the canvas when the user manually corrects a sticker so they can
+  // keep editing without the live feed moving under them.
+  const [frameFrozen, setFrameFrozen] = useState(false);
+  const frameFrozenRef = useRef(false);
+  frameFrozenRef.current = frameFrozen;
 
   // Auto-capture states — use refs so the rAF loop always reads current values
   const lastFingerprintRef = useRef("");
@@ -200,8 +191,8 @@ export default function Scanner({ onComplete }: ScannerProps) {
             const guideVW = guideCSS * scaleX;
             const guideVH = guideCSS * scaleY;
 
-            // Skip redraw when calibration is paused — keeps the frozen frame on canvas
-            if (!(introStepRef.current === 'calibrate' && calPausedRef.current)) {
+            // Skip redraw when frozen (user is correcting stickers) — keeps canvas still
+            if (!frameFrozenRef.current) {
               ctx.save();
               if (curFacingMode === 'user') {
                 ctx.translate(canvas.width, 0);
@@ -225,25 +216,10 @@ export default function Scanner({ onComplete }: ScannerProps) {
             setCubeDetected(detected);
           }
 
-          // ── Calibration live preview ─────────────────────────────────────
-          // During the calibration phase, sample the canvas centre (40×40px) so
-          // the UI can show the user exactly what colour the camera currently sees.
-          // Skip when paused so the swatch stays frozen.
-          if (introStepRef.current === 'calibrate' && !calPausedRef.current) {
-            const cx = canvas.width / 2, cy = canvas.height / 2, sz = 40;
-            const d = ctx.getImageData(cx - sz / 2, cy - sz / 2, sz, sz).data;
-            let cr = 0, cg = 0, cb = 0;
-            for (let i = 0; i < d.length; i += 4) { cr += d[i]; cg += d[i + 1]; cb += d[i + 2]; }
-            const n = d.length / 4;
-            const toHex = (x: number) => Math.round(x / n).toString(16).padStart(2, '0');
-            setCalLiveHex(`#${toHex(cr)}${toHex(cg)}${toHex(cb)}`);
-          }
-
           // Color detection: canvas now represents the guide area exactly.
           // Divide into a uniform 3×3 grid — each cell is 100×100px in the canvas.
           const boxSize = canvas.width / 3; // 100px
           const curCalibration = calibrationRef.current;
-          const calComplete = CAL_ORDER.every(c => curCalibration[c] != null);
 
           const gridColors: CubeColor[][] = [];
           for (let r = 0; r < 3; r++) {
@@ -279,10 +255,9 @@ export default function Scanner({ onComplete }: ScannerProps) {
                 red += data[i]; g += data[i + 1]; b += data[i + 2];
               }
               const count = data.length / 4;
-              // Use calibrated nearest-neighbour when calibration is complete
-              const color = calComplete
-                ? detectColorCalibrated(red / count, g / count, b / count, curCalibration as Record<CubeColor, CalHSV>)
-                : detectColor(red / count, g / count, b / count);
+              // Use calibrated nearest-neighbour only for colors the user has already
+              // corrected — falls back to HSV ranges for uncalibrated colors.
+              const color = detectColorWithCalibration(red / count, g / count, b / count, curCalibration);
               row.push(color);
             }
             gridColors.push(row);
@@ -355,8 +330,8 @@ export default function Scanner({ onComplete }: ScannerProps) {
             lastFingerprintRef.current = fingerprint;
             stabilityStartRef.current = Date.now();
           } else if (stabilityStartRef.current && Date.now() - stabilityStartRef.current > 1200) {
-            // Stable for 1.2s — only capture if cube face is recognised and colors are diverse
-            if (curFace !== lastCapturedFaceRef.current && cubeDetectedRef.current) {
+            // Stable for 1.2s — only capture if cube face is recognised, not frozen, and colors are diverse
+            if (curFace !== lastCapturedFaceRef.current && cubeDetectedRef.current && !frameFrozenRef.current) {
                const uniqueColors = new Set(gridColors.flat()).size;
                if (uniqueColors >= 2) {
                  captureFaceRef.current();
@@ -380,6 +355,7 @@ export default function Scanner({ onComplete }: ScannerProps) {
     }));
     lastCapturedFaceRef.current = currentFace;
     setManualOverrides(Array(3).fill(null).map(() => Array(3).fill(null)));
+    setFrameFrozen(false); // resume live feed for the next face
 
     if (currentFaceIndex < 5) {
       setCurrentFaceIndex(i => i + 1);
@@ -390,6 +366,28 @@ export default function Scanner({ onComplete }: ScannerProps) {
   const handleOverlayChange = useCallback(
     (row: number, col: number, colorLabel: string) => {
       Haptic.light();
+
+      // Sample the frozen/live canvas pixel at this sticker's position and store
+      // it as a calibration reference for this color label.  Future scans will use
+      // nearest-neighbour against these real samples to distinguish orange vs red, etc.
+      if (canvasRef.current) {
+        const ctx2 = canvasRef.current.getContext('2d', { willReadFrequently: true });
+        if (ctx2) {
+          const cellSize = 100; // 300 / 3
+          const cx = col * cellSize + cellSize / 2;
+          const cy = row * cellSize + cellSize / 2;
+          const sampleSize = 12;
+          const d = ctx2.getImageData(cx - sampleSize / 2, cy - sampleSize / 2, sampleSize, sampleSize).data;
+          let sr = 0, sg = 0, sb = 0;
+          for (let i = 0; i < d.length; i += 4) { sr += d[i]; sg += d[i + 1]; sb += d[i + 2]; }
+          const n = d.length / 4;
+          setCalibration(prev => ({ ...prev, [colorLabel]: rgbToHsvPublic(sr / n, sg / n, sb / n) }));
+        }
+      }
+
+      // Freeze the frame so the user can keep correcting without the image moving.
+      setFrameFrozen(true);
+
       setManualOverrides(prev => {
         const next = prev.map(r => [...r]);
         next[row][col] = colorLabel as CubeColor;
@@ -422,7 +420,14 @@ export default function Scanner({ onComplete }: ScannerProps) {
             </div>
             <div>
               <h2 className="font-bold text-lg leading-tight">{FACE_LABELS[currentFace]}</h2>
-              <p className="text-xs text-zinc-400">Step {currentFaceIndex + 1} of 6</p>
+              <div className="flex items-center gap-2">
+                <p className="text-xs text-zinc-400">Step {currentFaceIndex + 1} of 6</p>
+                {Object.keys(calibration).length > 0 && (
+                  <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded-full">
+                    ✓ {Object.keys(calibration).length} calibrated
+                  </span>
+                )}
+              </div>
             </div>
           </div>
           <div className="flex gap-2">
@@ -499,8 +504,23 @@ export default function Scanner({ onComplete }: ScannerProps) {
 
           {/* Rotation Arrow */}
           <AnimatePresence>
-            {introStep === null && currentFaceIndex > 0 && stabilityStartRef.current && (Date.now() - stabilityStartRef.current < 3000) && (
+            {!showIntro && currentFaceIndex > 0 && stabilityStartRef.current && (Date.now() - stabilityStartRef.current < 3000) && (
               <RotationArrow alg={guidance.alg} facingMode={facingMode} />
+            )}
+          </AnimatePresence>
+
+          {/* Frame-frozen indicator */}
+          <AnimatePresence>
+            {frameFrozen && (
+              <motion.div
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                className="absolute top-4 left-4 z-20 flex items-center gap-2 px-3 py-2 rounded-xl bg-amber-500/20 border border-amber-500/30 backdrop-blur-sm"
+              >
+                <Pause className="w-3.5 h-3.5 text-amber-400" />
+                <span className="text-xs font-bold text-amber-300">Frame frozen — correct stickers, then Capture</span>
+              </motion.div>
             )}
           </AnimatePresence>
 
@@ -712,13 +732,10 @@ export default function Scanner({ onComplete }: ScannerProps) {
         </div>
       </div>
 
-      {/* ── Step overlays (camera picker → calibration) ───────────────────── */}
-      <AnimatePresence mode="wait">
-
-        {/* Step 1: Camera picker */}
-        {introStep === 'camera' && (
+      {/* Intro Overlay — camera picker */}
+      <AnimatePresence>
+        {showIntro && (
           <motion.div
-            key="camera-picker"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -729,12 +746,15 @@ export default function Scanner({ onComplete }: ScannerProps) {
                 <Camera className="w-10 h-10 text-blue-400" />
               </div>
               <h2 className="text-2xl font-heading font-bold mb-2">Choose Your Camera</h2>
-              <p className="text-zinc-400 text-sm mb-8">
+              <p className="text-zinc-400 text-sm mb-3">
                 The rotation arrows will adapt to your camera direction.
+              </p>
+              <p className="text-zinc-500 text-xs mb-8">
+                Tip: if colors are misdetected while scanning, tap any sticker in the live grid to correct it — the app will learn your cube's colors automatically.
               </p>
               <div className="grid grid-cols-2 gap-3 mb-6">
                 <button
-                  onClick={() => { setFacingMode('environment'); setIntroStep('calibrate'); }}
+                  onClick={() => { setFacingMode('environment'); setShowIntro(false); }}
                   className={`flex flex-col items-center gap-3 p-5 rounded-2xl border-2 transition-all ${
                     facingMode === 'environment'
                       ? 'border-blue-500 bg-blue-500/20 text-white'
@@ -748,7 +768,7 @@ export default function Scanner({ onComplete }: ScannerProps) {
                   </div>
                 </button>
                 <button
-                  onClick={() => { setFacingMode('user'); setIntroStep('calibrate'); }}
+                  onClick={() => { setFacingMode('user'); setShowIntro(false); }}
                   className={`flex flex-col items-center gap-3 p-5 rounded-2xl border-2 transition-all ${
                     facingMode === 'user'
                       ? 'border-violet-500 bg-violet-500/20 text-white'
@@ -768,119 +788,6 @@ export default function Scanner({ onComplete }: ScannerProps) {
             </motion.div>
           </motion.div>
         )}
-
-        {/* Step 2: Color calibration */}
-        {introStep === 'calibrate' && (() => {
-          const currentCalColor = CAL_ORDER[calColorIndex];
-          const sampledCount = CAL_ORDER.filter(c => calibration[c] != null).length;
-          const expectedHex = COLOR_MAP[currentCalColor];
-
-          const sampleCurrentColor = () => {
-            if (!canvasRef.current) return;
-            const ctx2 = canvasRef.current.getContext('2d', { willReadFrequently: true });
-            if (!ctx2) return;
-            const cx = 150, cy = 150, sz = 40;
-            const d = ctx2.getImageData(cx - sz / 2, cy - sz / 2, sz, sz).data;
-            let r = 0, g = 0, b = 0;
-            for (let i = 0; i < d.length; i += 4) { r += d[i]; g += d[i + 1]; b += d[i + 2]; }
-            const n = d.length / 4;
-            const hsv = rgbToHsvPublic(r / n, g / n, b / n);
-            const newCal = { ...calibration, [currentCalColor]: hsv };
-            setCalibration(newCal);
-            setCalPaused(false); // resume for the next color
-            if (calColorIndex < CAL_ORDER.length - 1) {
-              setCalColorIndex(i => i + 1);
-            } else {
-              setIntroStep(null);
-            }
-          };
-
-          return (
-            <motion.div
-              key="calibration"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="absolute inset-0 z-50 bg-zinc-950/85 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center"
-            >
-              <motion.div initial={{ scale: 0.95, y: 16 }} animate={{ scale: 1, y: 0 }} className="max-w-xs w-full">
-                {/* Progress dots */}
-                <div className="flex justify-center gap-1.5 mb-6">
-                  {CAL_ORDER.map((c, i) => (
-                    <div
-                      key={c}
-                      className="w-2 h-2 rounded-full transition-all duration-300"
-                      style={{
-                        backgroundColor: i < sampledCount ? COLOR_MAP[c] : i === calColorIndex ? COLOR_MAP[c] + '80' : 'rgba(255,255,255,0.15)',
-                        transform: i === calColorIndex ? 'scale(1.4)' : 'scale(1)',
-                      }}
-                    />
-                  ))}
-                </div>
-
-                <p className="text-xs font-bold uppercase tracking-widest text-zinc-500 mb-1">
-                  Color {calColorIndex + 1} of {CAL_ORDER.length}
-                </p>
-                <h2 className="text-xl font-heading font-bold mb-1 capitalize">{currentCalColor}</h2>
-                <p className="text-zinc-400 text-sm mb-6">{CAL_LABELS[currentCalColor]}</p>
-
-                {/* Live vs expected swatches */}
-                <div className="flex items-center justify-center gap-4 mb-6">
-                  <div className="flex flex-col items-center gap-1.5">
-                    <div
-                      className="w-16 h-16 rounded-2xl border-2 border-white/20 shadow-lg transition-colors duration-100"
-                      style={{ backgroundColor: calLiveHex }}
-                    />
-                    <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">Camera sees</span>
-                  </div>
-                  <div className="text-zinc-600 text-lg font-bold">vs</div>
-                  <div className="flex flex-col items-center gap-1.5">
-                    <div
-                      className="w-16 h-16 rounded-2xl border-2 border-white/20 shadow-lg"
-                      style={{ backgroundColor: expectedHex }}
-                    />
-                    <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">Expected</span>
-                  </div>
-                </div>
-
-                {/* Pause / Resume + hint */}
-                <div className="flex items-center justify-center gap-3 mb-5">
-                  <button
-                    onClick={() => setCalPaused(p => !p)}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-xl border text-sm font-bold transition-all ${
-                      calPaused
-                        ? 'border-amber-500/60 bg-amber-500/20 text-amber-300'
-                        : 'border-white/15 bg-white/5 text-zinc-400 hover:border-white/30'
-                    }`}
-                  >
-                    {calPaused
-                      ? <><Play  className="w-4 h-4" /> Resume</>
-                      : <><Pause className="w-4 h-4" /> Freeze frame</>
-                    }
-                  </button>
-                  <p className="text-[11px] text-zinc-600 text-left leading-snug">
-                    Freeze, aim at the sticker,<br />then tap Sample.
-                  </p>
-                </div>
-
-                <button
-                  onClick={sampleCurrentColor}
-                  className="btn-primary w-full py-4 text-base font-bold mb-3"
-                  style={{ boxShadow: `0 0 20px 2px ${expectedHex}40` }}
-                >
-                  Sample this color
-                </button>
-                <button
-                  onClick={() => setIntroStep(null)}
-                  className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors py-2"
-                >
-                  Skip calibration →
-                </button>
-              </motion.div>
-            </motion.div>
-          );
-        })()}
-
       </AnimatePresence>
     </div>
   );
@@ -904,16 +811,15 @@ function rgbToHsvPublic(r: number, g: number, b: number): CalHSV {
 }
 
 /**
- * Nearest-neighbour color classifier using calibrated HSV reference points.
- * Hue distance is weighted highest (most discriminative); saturation helps
- * separate white from chromatic; value is least weighted (lighting variance).
+ * Nearest-neighbour classifier among only the calibrated colors.
+ * Returns null if no calibration data is present.
  */
 function detectColorCalibrated(
   r: number, g: number, b: number,
-  cal: Record<CubeColor, CalHSV>,
-): CubeColor {
+  cal: CalibrationData,
+): CubeColor | null {
   const { h, s, v } = rgbToHsvPublic(r, g, b);
-  let best: CubeColor = 'white';
+  let best: CubeColor | null = null;
   let bestDist = Infinity;
   for (const color of CAL_ORDER) {
     const ref = cal[color];
@@ -925,6 +831,26 @@ function detectColorCalibrated(
     if (dist < bestDist) { bestDist = dist; best = color; }
   }
   return best;
+}
+
+/**
+ * Hybrid classifier: uses calibrated nearest-neighbour only when the default
+ * HSV classifier returns a color that has a calibration entry (meaning there
+ * may be ambiguity with a nearby calibrated color).  Falls back to the default
+ * for colors that have never been corrected.
+ *
+ * Example: red and orange are both calibrated → if default says "orange",
+ * we re-run nearest-neighbour to check if it's closer to the calibrated red.
+ * If default says "green" and green is uncalibrated, we trust the default.
+ */
+function detectColorWithCalibration(
+  r: number, g: number, b: number,
+  cal: CalibrationData,
+): CubeColor {
+  const defaultResult = detectColor(r, g, b);
+  if (!cal[defaultResult]) return defaultResult; // color not calibrated → trust default
+  const calibrated = detectColorCalibrated(r, g, b, cal);
+  return calibrated ?? defaultResult;
 }
 
 /**
