@@ -8,7 +8,7 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Camera, ArrowLeft, ArrowRight, Check, RotateCw, AlertTriangle, Sun, Bug, SwitchCamera, Pause } from 'lucide-react';
+import { Camera, ArrowLeft, ArrowRight, Check, RotateCw, AlertTriangle, Sun, Bug, SwitchCamera, Pause, Play } from 'lucide-react';
 import {
   CubeState,
   CubeColor,
@@ -35,6 +35,10 @@ type CalibrationData = Partial<Record<CubeColor, CalHSV>>;
 
 const CAL_ORDER: CubeColor[] = ['white', 'yellow', 'red', 'orange', 'green', 'blue'];
 
+// ── Cube region detection types ──────────────────────────────────────────────
+// All coordinates in the *displayed* (mirrored for user camera) video frame.
+type CubeRegion = { vx: number; vy: number; vSize: number; confidence: number };
+
 export default function Scanner({ onComplete }: ScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -56,6 +60,25 @@ export default function Scanner({ onComplete }: ScannerProps) {
   const [debugMode, setDebugMode] = useState(false);
   const [cubeDetected, setCubeDetected] = useState(false);
   const cubeDetectedRef = useRef(false);
+
+  // ── Dynamic cube region detection ────────────────────────────────────────
+  // Instead of a fixed guide box, the algorithm scans each frame for the best
+  // cube-like region (high saturation cells separated by dark grid lines).
+  // The 3×3 sampling grid follows whatever region the detector locks onto.
+  const detectionCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  if (!detectionCanvasRef.current && typeof document !== 'undefined') {
+    detectionCanvasRef.current = document.createElement('canvas');
+  }
+  const cubeRegionRef = useRef<CubeRegion | null>(null);
+  // Seeded with "now" so the 3s fallback grace period starts at mount,
+  // not back in 1970.
+  const lastGoodDetectionAtRef = useRef<number>(Date.now());
+  const detectionFrameCounterRef = useRef<number>(0);
+  const [detectedOverlay, setDetectedOverlay] = useState<
+    { x: number; y: number; size: number; confidence: number } | null
+  >(null);
+  const [fallbackMode, setFallbackMode] = useState(false);
+  const fallbackModeRef = useRef(false);
 
   // ── Calibration state ────────────────────────────────────────────────────
   // Built up incrementally as the user manually corrects stickers during scanning.
@@ -139,6 +162,10 @@ export default function Scanner({ onComplete }: ScannerProps) {
 
   // Real-time color detection loop
   useEffect(() => {
+    // Reset cube-region state on (re)start so stale locks don't leak across sessions
+    cubeRegionRef.current = null;
+    lastGoodDetectionAtRef.current = Date.now();
+    fallbackModeRef.current = false;
     let animationFrame: number;
     const detect = () => {
       if (videoRef.current && canvasRef.current && cameraActive) {
@@ -146,17 +173,19 @@ export default function Scanner({ onComplete }: ScannerProps) {
         const canvas = canvasRef.current;
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         if (ctx) {
-          canvas.width = 300; // Small canvas for processing
-          canvas.height = 300;
+          // Only set dimensions once — assigning canvas.width always clears the canvas,
+          // even when the value is unchanged. Doing it every frame wipes a frozen frame.
+          if (canvas.width !== 300) canvas.width = 300;
+          if (canvas.height !== 300) canvas.height = 300;
           
           // Read current values from refs to avoid stale closures
           const curFacingMode = facingModeRef.current;
           const curOverrides = manualOverridesRef.current;
           const curFace = currentFaceRef.current;
 
-          // Draw the guide area to canvas so sampling aligns with what the user sees.
-          // The guide box (w-64 = 256px CSS) is centered in the video container.
-          // We compute its position in video-frame coordinates accounting for object-cover.
+          // Locate the cube in the frame dynamically (throttled to every 3rd frame).
+          // When locked on, the 3×3 sampling grid follows the detected region so
+          // the user can hold the cube anywhere in view (including slightly tilted).
           const videoW = video.videoWidth;
           const videoH = video.videoHeight;
           const container = videoContainerRef.current;
@@ -169,27 +198,93 @@ export default function Scanner({ onComplete }: ScannerProps) {
             const containerAspect = containerW / containerH;
             let srcX = 0, srcY = 0, srcW = videoW, srcH = videoH;
             if (videoAspect > containerAspect) {
-              // Landscape video in portrait/square container — crop sides
               srcW = videoH * containerAspect;
               srcX = (videoW - srcW) / 2;
             } else {
-              // Portrait video in landscape container — crop top/bottom
               srcH = videoW / containerAspect;
               srcY = (videoH - srcH) / 2;
             }
 
-            // The CSS guide box (256×256px) is centered in the container
-            const guideCSS = 256;
-            const guideCSSX = (containerW - guideCSS) / 2;
-            const guideCSSY = (containerH - guideCSS) / 2;
+            // Run detection every 3rd frame (perf). Skipped while frozen so the
+            // tracked region doesn't drift under the user's corrections.
+            detectionFrameCounterRef.current = (detectionFrameCounterRef.current + 1) % 3;
+            const runDetection =
+              detectionFrameCounterRef.current === 0 &&
+              !frameFrozenRef.current &&
+              detectionCanvasRef.current !== null;
 
-            // Map guide box to video-frame coordinates
-            const scaleX = srcW / containerW;
-            const scaleY = srcH / containerH;
-            const guideVX = srcX + guideCSSX * scaleX;
-            const guideVY = srcY + guideCSSY * scaleY;
-            const guideVW = guideCSS * scaleX;
-            const guideVH = guideCSS * scaleY;
+            if (runDetection) {
+              const detected = detectCubeRegion(
+                video,
+                detectionCanvasRef.current!,
+                curFacingMode === 'user',
+                srcX, srcY, srcW, srcH,
+              );
+              if (detected) {
+                // Exponential smoothing to reduce jitter between frames
+                const prev = cubeRegionRef.current;
+                cubeRegionRef.current = prev
+                  ? {
+                      vx: prev.vx * 0.55 + detected.vx * 0.45,
+                      vy: prev.vy * 0.55 + detected.vy * 0.45,
+                      vSize: prev.vSize * 0.55 + detected.vSize * 0.45,
+                      confidence: detected.confidence,
+                    }
+                  : detected;
+                lastGoodDetectionAtRef.current = Date.now();
+              } else if (Date.now() - lastGoodDetectionAtRef.current > 500) {
+                cubeRegionRef.current = null;
+              }
+            }
+
+            const region = cubeRegionRef.current;
+            const sinceGood = Date.now() - lastGoodDetectionAtRef.current;
+            // After ~3s without a lock, drop back to the fixed guide box and warn
+            const useFallback = !region && sinceGood > 3000;
+            if (useFallback !== fallbackModeRef.current) {
+              fallbackModeRef.current = useFallback;
+              setFallbackMode(useFallback);
+            }
+
+            // Determine the rect (in raw video coords) to sample from
+            let sampleVX: number, sampleVY: number, sampleVW: number, sampleVH: number;
+            if (region) {
+              // region is in mirrored-display space. Invert X for raw-frame sampling;
+              // the mirror flip below re-aligns the canvas with what the user sees.
+              const mirrored = curFacingMode === 'user';
+              sampleVX = mirrored ? videoW - region.vx - region.vSize : region.vx;
+              sampleVY = region.vy;
+              sampleVW = region.vSize;
+              sampleVH = region.vSize;
+
+              // Push display-space coords to React state for the overlay quad
+              if (detectionFrameCounterRef.current === 0) {
+                const cssX = ((region.vx - srcX) / srcW) * containerW;
+                const cssY = ((region.vy - srcY) / srcH) * containerH;
+                const cssSize = (region.vSize / srcW) * containerW;
+                setDetectedOverlay({
+                  x: cssX,
+                  y: cssY,
+                  size: cssSize,
+                  confidence: region.confidence,
+                });
+              }
+            } else {
+              // Fallback: fixed centred 256×256 CSS guide box mapped to raw video coords
+              const guideCSS = 256;
+              const guideCSSX = (containerW - guideCSS) / 2;
+              const guideCSSY = (containerH - guideCSS) / 2;
+              const scaleX = srcW / containerW;
+              const scaleY = srcH / containerH;
+              sampleVX = srcX + guideCSSX * scaleX;
+              sampleVY = srcY + guideCSSY * scaleY;
+              sampleVW = guideCSS * scaleX;
+              sampleVH = guideCSS * scaleY;
+
+              if (detectionFrameCounterRef.current === 0) {
+                setDetectedOverlay(null);
+              }
+            }
 
             // Skip redraw when frozen (user is correcting stickers) — keeps canvas still
             if (!frameFrozenRef.current) {
@@ -198,8 +293,7 @@ export default function Scanner({ onComplete }: ScannerProps) {
                 ctx.translate(canvas.width, 0);
                 ctx.scale(-1, 1);
               }
-              // Draw only the guide region → fills the entire 300×300 canvas
-              ctx.drawImage(video, guideVX, guideVY, guideVW, guideVH, 0, 0, canvas.width, canvas.height);
+              ctx.drawImage(video, sampleVX, sampleVY, sampleVW, sampleVH, 0, 0, canvas.width, canvas.height);
               ctx.restore();
             }
           }
@@ -473,32 +567,77 @@ export default function Scanner({ onComplete }: ScannerProps) {
           />
           <canvas ref={canvasRef} className="hidden" />
 
-          {/* Scan Guide Overlay */}
-          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none gap-2">
-            <div
-              className={`w-64 h-64 border-2 rounded-3xl relative transition-all duration-300 ${
-                cubeDetected
-                  ? 'border-emerald-400/80 shadow-[0_0_20px_2px_rgba(52,211,153,0.25)]'
-                  : 'border-white/30'
-              }`}
-            >
-              <div className={`absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 rounded-tl-xl transition-colors duration-300 ${cubeDetected ? 'border-emerald-400' : 'border-white'}`} />
-              <div className={`absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 rounded-tr-xl transition-colors duration-300 ${cubeDetected ? 'border-emerald-400' : 'border-white'}`} />
-              <div className={`absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 rounded-bl-xl transition-colors duration-300 ${cubeDetected ? 'border-emerald-400' : 'border-white'}`} />
-              <div className={`absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 rounded-br-xl transition-colors duration-300 ${cubeDetected ? 'border-emerald-400' : 'border-white'}`} />
-              {/* Grid lines */}
-              <div className="absolute left-1/3 top-0 bottom-0 w-px bg-white/15" />
-              <div className="absolute left-2/3 top-0 bottom-0 w-px bg-white/15" />
-              <div className="absolute top-1/3 left-0 right-0 h-px bg-white/15" />
-              <div className="absolute top-2/3 left-0 right-0 h-px bg-white/15" />
-            </div>
-            {/* Detection status label */}
-            <div className={`px-3 py-1 rounded-full text-[11px] font-bold backdrop-blur-sm transition-all duration-300 ${
-              cubeDetected
-                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                : 'bg-black/30 text-zinc-500 border border-white/10'
-            }`}>
-              {cubeDetected ? '✓ Cube detected — hold still' : 'Align cube face in frame'}
+          {/* Scan Region Overlay — follows the dynamically detected cube */}
+          <div className="absolute inset-0 pointer-events-none">
+            {/* Dynamic bounding quad on the detected cube */}
+            {detectedOverlay && !fallbackMode && (
+              <div
+                className={`absolute border-2 rounded-2xl transition-[border-color,box-shadow] duration-150 ${
+                  cubeDetected
+                    ? 'border-emerald-400/80 shadow-[0_0_20px_2px_rgba(52,211,153,0.25)]'
+                    : 'border-white/60'
+                }`}
+                style={{
+                  left: detectedOverlay.x,
+                  top: detectedOverlay.y,
+                  width: detectedOverlay.size,
+                  height: detectedOverlay.size,
+                }}
+              >
+                <div className={`absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 rounded-tl-xl ${cubeDetected ? 'border-emerald-400' : 'border-white'}`} />
+                <div className={`absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 rounded-tr-xl ${cubeDetected ? 'border-emerald-400' : 'border-white'}`} />
+                <div className={`absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 rounded-bl-xl ${cubeDetected ? 'border-emerald-400' : 'border-white'}`} />
+                <div className={`absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 rounded-br-xl ${cubeDetected ? 'border-emerald-400' : 'border-white'}`} />
+                <div className="absolute left-1/3 top-0 bottom-0 w-px bg-white/25" />
+                <div className="absolute left-2/3 top-0 bottom-0 w-px bg-white/25" />
+                <div className="absolute top-1/3 left-0 right-0 h-px bg-white/25" />
+                <div className="absolute top-2/3 left-0 right-0 h-px bg-white/25" />
+              </div>
+            )}
+
+            {/* Fallback: fixed centred guide box (shown when auto-detection fails) */}
+            {fallbackMode && (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div
+                  className={`w-64 h-64 border-2 rounded-3xl relative transition-all duration-300 ${
+                    cubeDetected
+                      ? 'border-emerald-400/80 shadow-[0_0_20px_2px_rgba(52,211,153,0.25)]'
+                      : 'border-amber-400/60'
+                  }`}
+                >
+                  <div className={`absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 rounded-tl-xl ${cubeDetected ? 'border-emerald-400' : 'border-amber-400'}`} />
+                  <div className={`absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 rounded-tr-xl ${cubeDetected ? 'border-emerald-400' : 'border-amber-400'}`} />
+                  <div className={`absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 rounded-bl-xl ${cubeDetected ? 'border-emerald-400' : 'border-amber-400'}`} />
+                  <div className={`absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 rounded-br-xl ${cubeDetected ? 'border-emerald-400' : 'border-amber-400'}`} />
+                  <div className="absolute left-1/3 top-0 bottom-0 w-px bg-white/15" />
+                  <div className="absolute left-2/3 top-0 bottom-0 w-px bg-white/15" />
+                  <div className="absolute top-1/3 left-0 right-0 h-px bg-white/15" />
+                  <div className="absolute top-2/3 left-0 right-0 h-px bg-white/15" />
+                </div>
+              </div>
+            )}
+
+            {/* Status label — bottom center */}
+            <div className="absolute left-1/2 -translate-x-1/2 bottom-20 flex flex-col items-center gap-2">
+              {!detectedOverlay && !fallbackMode && (
+                <div className="px-3 py-1 rounded-full text-[11px] font-bold bg-black/50 text-zinc-300 border border-white/20 backdrop-blur-sm">
+                  Show the cube — try moving it closer
+                </div>
+              )}
+              {detectedOverlay && !fallbackMode && (
+                <div className={`px-3 py-1 rounded-full text-[11px] font-bold backdrop-blur-sm transition-all duration-300 ${
+                  cubeDetected
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                    : 'bg-black/50 text-zinc-300 border border-white/20'
+                }`}>
+                  {cubeDetected ? '✓ Cube detected — freeze or hold still' : 'Locking on cube…'}
+                </div>
+              )}
+              {fallbackMode && (
+                <div className="px-3 py-1 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 backdrop-blur-sm">
+                  Couldn't auto-detect — align cube face in box
+                </div>
+              )}
             </div>
           </div>
 
@@ -545,6 +684,23 @@ export default function Scanner({ onComplete }: ScannerProps) {
               </motion.div>
             )}
           </AnimatePresence>
+
+          {/* Freeze / Resume button — Bottom Left */}
+          <div className="absolute bottom-4 left-4 z-10">
+            <button
+              onClick={() => setFrameFrozen(f => !f)}
+              className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border font-bold text-sm backdrop-blur-md transition-all duration-200 ${
+                frameFrozen
+                  ? 'bg-amber-500/30 border-amber-500/50 text-amber-300 shadow-lg shadow-amber-500/20'
+                  : 'bg-black/40 border-white/15 text-white/70 hover:bg-black/60 hover:border-white/30'
+              }`}
+            >
+              {frameFrozen
+                ? <><Play  className="w-4 h-4" /> Resume</>
+                : <><Pause className="w-4 h-4" /> Freeze</>
+              }
+            </button>
+          </div>
 
           {/* Live Recognition Grid — Bottom Right */}
           <div className="absolute bottom-4 right-4 z-10 w-24 sm:w-32 lg:w-40">
@@ -916,6 +1072,169 @@ function assessCubeFaceConfidence(ctx: CanvasRenderingContext2D): number {
   const contrastScore    = Math.max(0, Math.min(1, (avgCell - avgBorder) / 80)); // needs 80+ gap
 
   return borderDarkScore * 0.55 + contrastScore * 0.45;
+}
+
+/**
+ * Scans the visible portion of the video frame for a cube face and returns
+ * its bounding square in display (mirrored if front-camera) coordinates.
+ *
+ * Strategy: downsample the frame, then for a range of candidate square sizes
+ * and positions, compute a score combining:
+ *   • cell saturation  — stickers are colourful
+ *   • dark grid lines  — plastic borders at 1/3 and 2/3 of the square
+ *   • contrast         — bright cells vs dark borders
+ * Uses integral images so each candidate is evaluated in O(1) rect sums.
+ *
+ * Returns null if the best score is below the confidence threshold.
+ *
+ * @param srcX/srcY/srcW/srcH — the portion of the raw video visible through
+ *   CSS `object-cover`. Detection is restricted to this region so the returned
+ *   coordinates are directly comparable to on-screen positions.
+ */
+function detectCubeRegion(
+  video: HTMLVideoElement,
+  workCanvas: HTMLCanvasElement,
+  mirror: boolean,
+  srcX: number,
+  srcY: number,
+  srcW: number,
+  srcH: number,
+): CubeRegion | null {
+  const videoW = video.videoWidth;
+  const videoH = video.videoHeight;
+  if (videoW === 0 || videoH === 0 || srcW === 0 || srcH === 0) return null;
+
+  // Downsample to a fixed width — cheap & robust
+  const DW = 160;
+  const DH = Math.max(1, Math.round((DW * srcH) / srcW));
+  workCanvas.width = DW;
+  workCanvas.height = DH;
+  const ctx = workCanvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+
+  ctx.save();
+  if (mirror) {
+    ctx.translate(DW, 0);
+    ctx.scale(-1, 1);
+  }
+  // Draw only the visible portion of the raw frame (matches what the user sees)
+  ctx.drawImage(video, srcX, srcY, srcW, srcH, 0, 0, DW, DH);
+  ctx.restore();
+
+  const img = ctx.getImageData(0, 0, DW, DH).data;
+  const N = DW * DH;
+  const bri = new Float32Array(N);
+  const sat = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    const r = img[i * 4];
+    const g = img[i * 4 + 1];
+    const b = img[i * 4 + 2];
+    const mx = Math.max(r, g, b);
+    const mn = Math.min(r, g, b);
+    bri[i] = (r + g + b) / 3;
+    sat[i] = mx === 0 ? 0 : (mx - mn) / mx;
+  }
+
+  // Integral images for O(1) rectangle sums
+  const IW = DW + 1;
+  const satInt = new Float64Array(IW * (DH + 1));
+  const briInt = new Float64Array(IW * (DH + 1));
+  for (let y = 0; y < DH; y++) {
+    for (let x = 0; x < DW; x++) {
+      const idx = y * DW + x;
+      const i2 = (y + 1) * IW + (x + 1);
+      const iL = (y + 1) * IW + x;
+      const iU = y * IW + (x + 1);
+      const iUL = y * IW + x;
+      satInt[i2] = sat[idx] + satInt[iL] + satInt[iU] - satInt[iUL];
+      briInt[i2] = bri[idx] + briInt[iL] + briInt[iU] - briInt[iUL];
+    }
+  }
+  const sumRect = (intImg: Float64Array, x: number, y: number, w: number, h: number) => {
+    if (w <= 0 || h <= 0) return 0;
+    const x1 = Math.max(0, Math.min(DW, x));
+    const y1 = Math.max(0, Math.min(DH, y));
+    const x2 = Math.max(0, Math.min(DW, x + w));
+    const y2 = Math.max(0, Math.min(DH, y + h));
+    return (
+      intImg[y2 * IW + x2] -
+      intImg[y1 * IW + x2] -
+      intImg[y2 * IW + x1] +
+      intImg[y1 * IW + x1]
+    );
+  };
+
+  const minDim = Math.min(DW, DH);
+  const minSize = Math.max(18, Math.floor(minDim * 0.3));
+  const maxSize = Math.floor(minDim * 0.92);
+
+  let bestX = 0, bestY = 0, bestSize = 0, bestScore = 0;
+
+  for (let size = minSize; size <= maxSize; size += Math.max(4, Math.floor(size * 0.12))) {
+    const step = Math.max(3, Math.floor(size * 0.08));
+    const s3 = size / 3;
+    const cellSide = Math.max(2, Math.floor(s3 * 0.5));
+    const borderThick = Math.max(1, Math.floor(s3 * 0.12));
+    const cellPx = 9 * cellSide * cellSide;
+
+    for (let y = 0; y + size <= DH; y += step) {
+      for (let x = 0; x + size <= DW; x += step) {
+        // Cell centres: high saturation + bright
+        let cellSatSum = 0;
+        let cellBriSum = 0;
+        for (let r = 0; r < 3; r++) {
+          for (let c = 0; c < 3; c++) {
+            const cx = Math.floor(x + (c + 0.5) * s3 - cellSide / 2);
+            const cy = Math.floor(y + (r + 0.5) * s3 - cellSide / 2);
+            cellSatSum += sumRect(satInt, cx, cy, cellSide, cellSide);
+            cellBriSum += sumRect(briInt, cx, cy, cellSide, cellSide);
+          }
+        }
+        const avgCellSat = cellSatSum / cellPx;
+        const avgCellBri = cellBriSum / cellPx;
+
+        // Inner grid lines: dark plastic strips at 1/3 and 2/3
+        let borderBriSum = 0;
+        let borderPx = 0;
+        for (const bxOff of [s3, 2 * s3]) {
+          const bx = Math.floor(x + bxOff - borderThick / 2);
+          borderBriSum += sumRect(briInt, bx, y, borderThick, size);
+          borderPx += borderThick * size;
+        }
+        for (const byOff of [s3, 2 * s3]) {
+          const by = Math.floor(y + byOff - borderThick / 2);
+          borderBriSum += sumRect(briInt, x, by, size, borderThick);
+          borderPx += borderThick * size;
+        }
+        const avgBorderBri = borderPx > 0 ? borderBriSum / borderPx : 255;
+
+        const satScore = Math.min(1, avgCellSat * 2.2);
+        const contrastScore = Math.max(0, Math.min(1, (avgCellBri - avgBorderBri) / 50));
+        const darkBorderScore = Math.max(0, 1 - avgBorderBri / 110);
+
+        const score = satScore * 0.30 + contrastScore * 0.40 + darkBorderScore * 0.30;
+        if (score > bestScore) {
+          bestScore = score;
+          bestX = x;
+          bestY = y;
+          bestSize = size;
+        }
+      }
+    }
+  }
+
+  // Confidence threshold — below this we give up and let the UI warn the user
+  if (bestScore < 0.40) return null;
+
+  // Map detected rect from downsampled-visible coords back to raw-video coords
+  // (still in display/mirrored space — caller handles the un-mirror for sampling)
+  const scale = srcW / DW;
+  return {
+    vx: srcX + bestX * scale,
+    vy: srcY + bestY * scale,
+    vSize: bestSize * scale,
+    confidence: bestScore,
+  };
 }
 
 function RotationArrow({ alg, facingMode }: { alg: string; facingMode: 'user' | 'environment' }) {
