@@ -102,16 +102,34 @@ export default function Scanner({ onComplete }: ScannerProps) {
   const currentFace = FACE_ORDER[currentFaceIndex];
   const guidance = ROTATION_GUIDANCE[currentFace];
 
-  // Derive hex color map for the 3D preview
+  // Track which faces have been explicitly captured by the user
+  const [capturedFaces, setCapturedFaces] = useState<Set<FaceName>>(new Set());
+
+  // Derive hex color map for the 3D preview:
+  // - Captured faces → their scanned colors
+  // - Current face being scanned → live realTimeColors
+  // - Not-yet-reached faces → grey (unknown)
+  const GREY = '#6b7280';
   const cubeColors = React.useMemo(() => {
     const result: Record<string, (string | null)[][]> = {};
     for (const face of FACE_ORDER) {
-      result[face] = scannedState[face].map((row: CubeColor[]) =>
-        row.map((c: CubeColor) => COLOR_MAP[c] ?? null)
-      );
+      if (capturedFaces.has(face)) {
+        // Already confirmed — show actual scanned colors
+        result[face] = scannedState[face].map((row: CubeColor[]) =>
+          row.map((c: CubeColor) => COLOR_MAP[c] ?? null)
+        );
+      } else if (face === currentFace) {
+        // Actively scanning — show live camera colors
+        result[face] = realTimeColors.map(row =>
+          row.map(c => COLOR_MAP[c] ?? null)
+        );
+      } else {
+        // Not yet scanned — grey
+        result[face] = Array(3).fill(null).map(() => Array(3).fill(GREY));
+      }
     }
     return result;
-  }, [scannedState]);
+  }, [scannedState, capturedFaces, currentFace, realTimeColors]);
 
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
 
@@ -447,6 +465,7 @@ export default function Scanner({ onComplete }: ScannerProps) {
       ...prev,
       [currentFace]: finalColors,
     }));
+    setCapturedFaces(prev => new Set([...prev, currentFace]));
     lastCapturedFaceRef.current = currentFace;
     setManualOverrides(Array(3).fill(null).map(() => Array(3).fill(null)));
     setFrameFrozen(false); // resume live feed for the next face
