@@ -83,3 +83,13 @@ GitHub Pages at `https://Kasper166.github.io/Rubiks-Cube-Solver/` (base path: `/
 
 **New feature:**
 - `Scanner.tsx` — CV debug mode (`🐛` button): shows the exact image the algorithm samples, sampling points with detected colours, override/forced indicators, unique colour count, and glare %. Useful for diagnosing scan issues on any device.
+
+### 2026-04-10 — Dynamic cube detection & 3D live preview
+**New features:**
+- `Scanner.tsx` — Dynamic cube region detection replaces the fixed 256×256 guide box. Every 3rd frame (≈20 Hz) a `detectCubeRegion()` helper downsamples the visible video area to 160 px wide, builds integral images of brightness and saturation, then sweeps candidate square sizes scoring each by: cell saturation, cell-vs-border contrast, and dark inner grid lines. The 3×3 sampling grid follows the detected region so the user can hold the cube anywhere in frame (including slightly off-centre or tilted). Exponential smoothing (α=0.45) prevents jitter.
+- `Scanner.tsx` — Fallback mode: if no cube is detected for 3 s, the overlay warns "Couldn't auto-detect — align cube face in box" and reverts to the original centred guide box. Detection resumes automatically if a cube reappears.
+- `Scanner.tsx` — 3D preview now shows grey (`#6b7280`) for unscanned faces, live camera colours for the face currently being scanned, and confirmed colours for already-captured faces. Driven by new `capturedFaces: Set<FaceName>` state updated inside `captureFace()`.
+
+**UX changes:**
+- Removed the fixed scan guide box as the primary UI; the bounding quad now tracks the cube dynamically and turns green when `assessCubeFaceConfidence` is satisfied.
+- Status label adapts: "Show the cube — try moving it closer" / "Locking on cube…" / "Cube detected — freeze or hold still" / fallback warning.

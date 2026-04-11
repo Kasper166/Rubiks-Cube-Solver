@@ -39,6 +39,9 @@ const CAL_ORDER: CubeColor[] = ['white', 'yellow', 'red', 'orange', 'green', 'bl
 // All coordinates in the *displayed* (mirrored for user camera) video frame.
 type CubeRegion = { vx: number; vy: number; vSize: number; confidence: number };
 
+// 3-state detection FSM with hysteresis to prevent flicker
+type DetectionState = 'SEARCHING' | 'LOCKING' | 'LOCKED';
+
 export default function Scanner({ onComplete }: ScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -58,8 +61,8 @@ export default function Scanner({ onComplete }: ScannerProps) {
   const [glare, setGlare] = useState<GlareResult | null>(null);
   const [showIntro, setShowIntro] = useState(true);
   const [debugMode, setDebugMode] = useState(false);
-  const [cubeDetected, setCubeDetected] = useState(false);
-  const cubeDetectedRef = useRef(false);
+  const [detectionState, setDetectionState] = useState<DetectionState>('SEARCHING');
+  const detectionStateRef = useRef<DetectionState>('SEARCHING');
 
   // ── Dynamic cube region detection ────────────────────────────────────────
   // Instead of a fixed guide box, the algorithm scans each frame for the best
@@ -77,8 +80,9 @@ export default function Scanner({ onComplete }: ScannerProps) {
   const [detectedOverlay, setDetectedOverlay] = useState<
     { x: number; y: number; size: number; confidence: number } | null
   >(null);
-  const [fallbackMode, setFallbackMode] = useState(false);
-  const fallbackModeRef = useRef(false);
+  // Hysteresis counters for LOCKED / SEARCHING transitions
+  const lockedFrameCountRef = useRef(0);   // consecutive frames ≥ 0.50
+  const unlockFrameCountRef = useRef(0);   // consecutive frames < 0.30
 
   // ── Calibration state ────────────────────────────────────────────────────
   // Built up incrementally as the user manually corrects stickers during scanning.
@@ -183,7 +187,9 @@ export default function Scanner({ onComplete }: ScannerProps) {
     // Reset cube-region state on (re)start so stale locks don't leak across sessions
     cubeRegionRef.current = null;
     lastGoodDetectionAtRef.current = Date.now();
-    fallbackModeRef.current = false;
+    detectionStateRef.current = 'SEARCHING';
+    lockedFrameCountRef.current = 0;
+    unlockFrameCountRef.current = 0;
     let animationFrame: number;
     const detect = () => {
       if (videoRef.current && canvasRef.current && cameraActive) {
@@ -257,12 +263,7 @@ export default function Scanner({ onComplete }: ScannerProps) {
 
             const region = cubeRegionRef.current;
             const sinceGood = Date.now() - lastGoodDetectionAtRef.current;
-            // After ~3s without a lock, drop back to the fixed guide box and warn
-            const useFallback = !region && sinceGood > 3000;
-            if (useFallback !== fallbackModeRef.current) {
-              fallbackModeRef.current = useFallback;
-              setFallbackMode(useFallback);
-            }
+            // After ~3s without a lock, treat as SEARCHING (show fixed guide box)
 
             // Determine the rect (in raw video coords) to sample from
             let sampleVX: number, sampleVY: number, sampleVW: number, sampleVH: number;
@@ -321,63 +322,102 @@ export default function Scanner({ onComplete }: ScannerProps) {
           const glareResult = detectGlare(fullImageData, 3, 240);
           setGlare(glareResult);
 
-          // Cube face recognition: check for dark sticker borders at 1/3 and 2/3 marks
-          const detected = assessCubeFaceConfidence(ctx) > 0.5;
-          if (detected !== cubeDetectedRef.current) {
-            cubeDetectedRef.current = detected;
-            setCubeDetected(detected);
+          // Cube face recognition: assess confidence and update FSM with hysteresis
+          const faceConfidence = assessCubeFaceConfidence(ctx);
+          const noRegion = !cubeRegionRef.current && (Date.now() - lastGoodDetectionAtRef.current) > 3000;
+          const prevState = detectionStateRef.current;
+          let nextState: DetectionState = prevState;
+
+          if (noRegion) {
+            // No cube region found for 3s → always SEARCHING
+            nextState = 'SEARCHING';
+            lockedFrameCountRef.current = 0;
+            unlockFrameCountRef.current = 0;
+          } else if (prevState === 'LOCKED') {
+            if (faceConfidence < 0.30) {
+              unlockFrameCountRef.current++;
+              if (unlockFrameCountRef.current >= 3) {
+                nextState = 'LOCKING';
+                lockedFrameCountRef.current = 0;
+              }
+            } else {
+              unlockFrameCountRef.current = 0;
+            }
+          } else {
+            // SEARCHING or LOCKING
+            unlockFrameCountRef.current = 0;
+            if (!cubeRegionRef.current) {
+              nextState = 'SEARCHING';
+              lockedFrameCountRef.current = 0;
+            } else if (faceConfidence >= 0.50) {
+              lockedFrameCountRef.current++;
+              if (lockedFrameCountRef.current >= 5) {
+                nextState = 'LOCKED';
+              } else {
+                nextState = 'LOCKING';
+              }
+            } else {
+              nextState = cubeRegionRef.current ? 'LOCKING' : 'SEARCHING';
+              lockedFrameCountRef.current = 0;
+            }
           }
 
-          // Color detection: canvas now represents the guide area exactly.
-          // Divide into a uniform 3×3 grid — each cell is 100×100px in the canvas.
+          if (nextState !== prevState) {
+            detectionStateRef.current = nextState;
+            setDetectionState(nextState);
+          }
+
+          // Color detection: only sample when LOCKED to avoid garbage colors in preview
           const boxSize = canvas.width / 3; // 100px
           const curCalibration = calibrationRef.current;
 
           const gridColors: CubeColor[][] = [];
-          for (let r = 0; r < 3; r++) {
-            const row: CubeColor[] = [];
-            for (let c = 0; c < 3; c++) {
-              // If manually overridden, use that color
-              if (curOverrides[r][c]) {
-                row.push(curOverrides[r][c]!);
-                continue;
-              }
+          if (detectionStateRef.current === 'LOCKED') {
+            for (let r = 0; r < 3; r++) {
+              const row: CubeColor[] = [];
+              for (let c = 0; c < 3; c++) {
+                // If manually overridden, use that color
+                if (curOverrides[r][c]) {
+                  row.push(curOverrides[r][c]!);
+                  continue;
+                }
 
-              // Force center color for the current face to avoid misdetection
-              if (r === 1 && c === 1) {
-                const expectedCenter = {
-                  U: 'white',
-                  F: 'green',
-                  R: 'red',
-                  B: 'blue',
-                  L: 'orange',
-                  D: 'yellow'
-                }[curFace] as CubeColor;
-                row.push(expectedCenter);
-                continue;
-              }
+                // Force center color for the current face to avoid misdetection
+                if (r === 1 && c === 1) {
+                  const expectedCenter = {
+                    U: 'white',
+                    F: 'green',
+                    R: 'red',
+                    B: 'blue',
+                    L: 'orange',
+                    D: 'yellow'
+                  }[curFace] as CubeColor;
+                  row.push(expectedCenter);
+                  continue;
+                }
 
-              const x = c * boxSize + boxSize / 2;
-              const y = r * boxSize + boxSize / 2;
-              const sampleSize = 12;
-              const data = ctx.getImageData(x - sampleSize/2, y - sampleSize/2, sampleSize, sampleSize).data;
+                const x = c * boxSize + boxSize / 2;
+                const y = r * boxSize + boxSize / 2;
+                const sampleSize = 12;
+                const data = ctx.getImageData(x - sampleSize/2, y - sampleSize/2, sampleSize, sampleSize).data;
 
-              let red = 0, g = 0, b = 0;
-              for (let i = 0; i < data.length; i += 4) {
-                red += data[i]; g += data[i + 1]; b += data[i + 2];
+                let red = 0, g = 0, b = 0;
+                for (let i = 0; i < data.length; i += 4) {
+                  red += data[i]; g += data[i + 1]; b += data[i + 2];
+                }
+                const count = data.length / 4;
+                // Use calibrated nearest-neighbour only for colors the user has already
+                // corrected — falls back to HSV ranges for uncalibrated colors.
+                const color = detectColorWithCalibration(red / count, g / count, b / count, curCalibration);
+                row.push(color);
               }
-              const count = data.length / 4;
-              // Use calibrated nearest-neighbour only for colors the user has already
-              // corrected — falls back to HSV ranges for uncalibrated colors.
-              const color = detectColorWithCalibration(red / count, g / count, b / count, curCalibration);
-              row.push(color);
+              gridColors.push(row);
             }
-            gridColors.push(row);
+            setRealTimeColors(gridColors);
           }
-          setRealTimeColors(gridColors);
 
           // ── Debug canvas: visualise what the CV algorithm sees ──────────
-          if (debugModeRef.current && debugCanvasRef.current) {
+          if (debugModeRef.current && debugCanvasRef.current && gridColors.length === 3) {
             const dc = debugCanvasRef.current;
             const dctx = dc.getContext('2d');
             if (dctx) {
@@ -436,18 +476,20 @@ export default function Scanner({ onComplete }: ScannerProps) {
           }
           // ────────────────────────────────────────────────────────────────
 
-          // Auto-capture detection (using refs for current values)
-          const fingerprint = gridColors.flat().join("");
-          if (fingerprint !== lastFingerprintRef.current) {
-            lastFingerprintRef.current = fingerprint;
-            stabilityStartRef.current = Date.now();
-          } else if (stabilityStartRef.current && Date.now() - stabilityStartRef.current > 1200) {
-            // Stable for 1.2s — only capture if cube face is recognised, not frozen, and colors are diverse
-            if (curFace !== lastCapturedFaceRef.current && cubeDetectedRef.current && !frameFrozenRef.current) {
-               const uniqueColors = new Set(gridColors.flat()).size;
-               if (uniqueColors >= 2) {
-                 captureFaceRef.current();
-               }
+          // Auto-capture detection (only when LOCKED and colors were sampled)
+          if (detectionStateRef.current === 'LOCKED' && gridColors.length === 3) {
+            const fingerprint = gridColors.flat().join("");
+            if (fingerprint !== lastFingerprintRef.current) {
+              lastFingerprintRef.current = fingerprint;
+              stabilityStartRef.current = Date.now();
+            } else if (stabilityStartRef.current && Date.now() - stabilityStartRef.current > 1200) {
+              // Stable for 1.2s — only capture if not frozen and colors are diverse
+              if (curFace !== lastCapturedFaceRef.current && !frameFrozenRef.current) {
+                const uniqueColors = new Set(gridColors.flat()).size;
+                if (uniqueColors >= 2) {
+                  captureFaceRef.current();
+                }
+              }
             }
           }
         }
@@ -588,11 +630,11 @@ export default function Scanner({ onComplete }: ScannerProps) {
 
           {/* Scan Region Overlay — follows the dynamically detected cube */}
           <div className="absolute inset-0 pointer-events-none">
-            {/* Dynamic bounding quad on the detected cube */}
-            {detectedOverlay && !fallbackMode && (
+            {/* Dynamic bounding quad: LOCKING or LOCKED states */}
+            {detectedOverlay && detectionState !== 'SEARCHING' && (
               <div
                 className={`absolute border-2 rounded-2xl transition-[border-color,box-shadow] duration-150 ${
-                  cubeDetected
+                  detectionState === 'LOCKED'
                     ? 'border-emerald-400/80 shadow-[0_0_20px_2px_rgba(52,211,153,0.25)]'
                     : 'border-white/60'
                 }`}
@@ -603,10 +645,10 @@ export default function Scanner({ onComplete }: ScannerProps) {
                   height: detectedOverlay.size,
                 }}
               >
-                <div className={`absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 rounded-tl-xl ${cubeDetected ? 'border-emerald-400' : 'border-white'}`} />
-                <div className={`absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 rounded-tr-xl ${cubeDetected ? 'border-emerald-400' : 'border-white'}`} />
-                <div className={`absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 rounded-bl-xl ${cubeDetected ? 'border-emerald-400' : 'border-white'}`} />
-                <div className={`absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 rounded-br-xl ${cubeDetected ? 'border-emerald-400' : 'border-white'}`} />
+                <div className={`absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 rounded-tl-xl ${detectionState === 'LOCKED' ? 'border-emerald-400' : 'border-white'}`} />
+                <div className={`absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 rounded-tr-xl ${detectionState === 'LOCKED' ? 'border-emerald-400' : 'border-white'}`} />
+                <div className={`absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 rounded-bl-xl ${detectionState === 'LOCKED' ? 'border-emerald-400' : 'border-white'}`} />
+                <div className={`absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 rounded-br-xl ${detectionState === 'LOCKED' ? 'border-emerald-400' : 'border-white'}`} />
                 <div className="absolute left-1/3 top-0 bottom-0 w-px bg-white/25" />
                 <div className="absolute left-2/3 top-0 bottom-0 w-px bg-white/25" />
                 <div className="absolute top-1/3 left-0 right-0 h-px bg-white/25" />
@@ -614,20 +656,14 @@ export default function Scanner({ onComplete }: ScannerProps) {
               </div>
             )}
 
-            {/* Fallback: fixed centred guide box (shown when auto-detection fails) */}
-            {fallbackMode && (
+            {/* Fallback: fixed centred guide box (SEARCHING for > 3s) */}
+            {detectionState === 'SEARCHING' && !detectedOverlay && (
               <div className="absolute inset-0 flex items-center justify-center">
-                <div
-                  className={`w-64 h-64 border-2 rounded-3xl relative transition-all duration-300 ${
-                    cubeDetected
-                      ? 'border-emerald-400/80 shadow-[0_0_20px_2px_rgba(52,211,153,0.25)]'
-                      : 'border-amber-400/60'
-                  }`}
-                >
-                  <div className={`absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 rounded-tl-xl ${cubeDetected ? 'border-emerald-400' : 'border-amber-400'}`} />
-                  <div className={`absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 rounded-tr-xl ${cubeDetected ? 'border-emerald-400' : 'border-amber-400'}`} />
-                  <div className={`absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 rounded-bl-xl ${cubeDetected ? 'border-emerald-400' : 'border-amber-400'}`} />
-                  <div className={`absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 rounded-br-xl ${cubeDetected ? 'border-emerald-400' : 'border-amber-400'}`} />
+                <div className="w-64 h-64 border-2 rounded-3xl relative transition-all duration-300 border-amber-400/60">
+                  <div className="absolute -top-1 -left-1 w-6 h-6 border-t-4 border-l-4 rounded-tl-xl border-amber-400" />
+                  <div className="absolute -top-1 -right-1 w-6 h-6 border-t-4 border-r-4 rounded-tr-xl border-amber-400" />
+                  <div className="absolute -bottom-1 -left-1 w-6 h-6 border-b-4 border-l-4 rounded-bl-xl border-amber-400" />
+                  <div className="absolute -bottom-1 -right-1 w-6 h-6 border-b-4 border-r-4 rounded-br-xl border-amber-400" />
                   <div className="absolute left-1/3 top-0 bottom-0 w-px bg-white/15" />
                   <div className="absolute left-2/3 top-0 bottom-0 w-px bg-white/15" />
                   <div className="absolute top-1/3 left-0 right-0 h-px bg-white/15" />
@@ -638,23 +674,19 @@ export default function Scanner({ onComplete }: ScannerProps) {
 
             {/* Status label — bottom center */}
             <div className="absolute left-1/2 -translate-x-1/2 bottom-20 flex flex-col items-center gap-2">
-              {!detectedOverlay && !fallbackMode && (
+              {detectionState === 'SEARCHING' && (
                 <div className="px-3 py-1 rounded-full text-[11px] font-bold bg-black/50 text-zinc-300 border border-white/20 backdrop-blur-sm">
-                  Show the cube — try moving it closer
+                  No cube detected — show a face to the camera
                 </div>
               )}
-              {detectedOverlay && !fallbackMode && (
-                <div className={`px-3 py-1 rounded-full text-[11px] font-bold backdrop-blur-sm transition-all duration-300 ${
-                  cubeDetected
-                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                    : 'bg-black/50 text-zinc-300 border border-white/20'
-                }`}>
-                  {cubeDetected ? '✓ Cube detected — freeze or hold still' : 'Locking on cube…'}
+              {detectionState === 'LOCKING' && (
+                <div className="px-3 py-1 rounded-full text-[11px] font-bold bg-black/50 text-zinc-300 border border-white/20 backdrop-blur-sm">
+                  Locking on cube…
                 </div>
               )}
-              {fallbackMode && (
-                <div className="px-3 py-1 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 backdrop-blur-sm">
-                  Couldn't auto-detect — align cube face in box
+              {detectionState === 'LOCKED' && (
+                <div className="px-3 py-1 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 backdrop-blur-sm">
+                  ✓ Cube detected — hold still
                 </div>
               )}
             </div>
@@ -828,6 +860,12 @@ export default function Scanner({ onComplete }: ScannerProps) {
                         <span className="text-zinc-500">Glare</span>
                         <span className={`font-mono font-bold ${glare?.hasGlare ? 'text-amber-400' : 'text-emerald-400'}`}>
                           {glare ? `${Math.round(glare.intensity * 100)}%` : '—'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-[9px]">
+                        <span className="text-zinc-500">Detection state</span>
+                        <span className={`font-mono font-bold ${detectionState === 'LOCKED' ? 'text-emerald-400' : detectionState === 'LOCKING' ? 'text-amber-400' : 'text-red-400'}`}>
+                          {detectionState}
                         </span>
                       </div>
                     </div>
@@ -1031,10 +1069,11 @@ function detectColorWithCalibration(
 /**
  * Estimates the probability that the canvas contains a Rubik's cube face.
  *
- * Strategy: a cube face has black plastic borders between stickers.
- * These borders appear at the 1/3 and 2/3 marks of the 300×300 canvas.
- * We compare the brightness of those border strips vs the cell centres.
- * Dark borders + bright cells + clear contrast → high confidence.
+ * Four signals combined with weighted sum:
+ *   • borderDarkScore  0.30 — black plastic borders at 1/3 and 2/3 marks are dark
+ *   • contrastScore    0.25 — cell centres are brighter than the borders
+ *   • colorVariance    0.25 — 9 cell hues vary widely (3-6 colours on a real face)
+ *   • saturationScore  0.20 — stickers are highly saturated
  */
 function assessCubeFaceConfidence(ctx: CanvasRenderingContext2D): number {
   const W = 300;
@@ -1070,27 +1109,68 @@ function assessCubeFaceConfidence(ctx: CanvasRenderingContext2D): number {
     }
   }
 
-  // Sample 12×12 patch at each of the 9 cell centres
+  // Sample 12×12 patch at each of the 9 cell centres; also collect hue & saturation
+  const cellHues: number[] = [];
+  const cellSats: number[] = [];
   for (let row = 0; row < 3; row++) {
     for (let col = 0; col < 3; col++) {
       const cx = Math.round(col * step + step / 2);
       const cy = Math.round(row * step + step / 2);
       const d = ctx.getImageData(cx - 6, cy - 6, 12, 12).data;
+      let sumR = 0, sumG = 0, sumB = 0, n = 0;
       for (let i = 0; i < d.length; i += 4) {
         cellBrightness += (d[i] + d[i + 1] + d[i + 2]) / 3;
         cellCount++;
+        sumR += d[i]; sumG += d[i + 1]; sumB += d[i + 2];
+        n++;
       }
+      // Average colour of this cell patch → HSV
+      const r = sumR / n / 255, g = sumG / n / 255, b = sumB / n / 255;
+      const max = Math.max(r, g, b), min = Math.min(r, g, b), delta = max - min;
+      let h = 0;
+      if (delta > 0) {
+        if (max === r)      h = (((g - b) / delta) % 6) * 60;
+        else if (max === g) h = ((b - r) / delta + 2) * 60;
+        else                h = ((r - g) / delta + 4) * 60;
+        if (h < 0) h += 360;
+      }
+      const s = max === 0 ? 0 : delta / max; // 0-1
+      cellHues.push(h);
+      cellSats.push(s);
     }
   }
 
   const avgBorder = borderCount > 0 ? borderBrightness / borderCount : 255;
   const avgCell   = cellCount   > 0 ? cellBrightness   / cellCount   : 0;
 
-  // Border should be dark (plastic frame), cells should be brighter (coloured stickers)
-  const borderDarkScore  = Math.max(0, 1 - avgBorder / 90);       // full score when avgBorder < ~45
-  const contrastScore    = Math.max(0, Math.min(1, (avgCell - avgBorder) / 80)); // needs 80+ gap
+  // 1. Border should be dark (plastic frame), cells should be brighter (coloured stickers)
+  const borderDarkScore = Math.max(0, 1 - avgBorder / 90);       // full score when avgBorder < ~45
+  const contrastScore   = Math.max(0, Math.min(1, (avgCell - avgBorder) / 80)); // needs 80+ gap
 
-  return borderDarkScore * 0.55 + contrastScore * 0.45;
+  // 2. Inter-cell hue variance — real cube face has 3-6 distinct hues.
+  //    Use circular mean/variance to handle red's 0°/360° wraparound.
+  let sinSum = 0, cosSum = 0;
+  for (const h of cellHues) {
+    const rad = h * Math.PI / 180;
+    sinSum += Math.sin(rad);
+    cosSum += Math.cos(rad);
+  }
+  const R = Math.sqrt(sinSum * sinSum + cosSum * cosSum) / cellHues.length; // 0-1 (1=all same)
+  const circularVariance = 1 - R; // 0=all same hue, 1=maximally spread
+  // Normalise: variance > 0.5 → score 1.0; variance < 0.1 → score 0.0
+  const colorVariance = Math.max(0, Math.min(1, (circularVariance - 0.10) / 0.40));
+
+  // 3. Average saturation — cube stickers are vivid, walls/books are dull.
+  //    avg_sat > 0.4 → 1.0; avg_sat < 0.1 → 0.0
+  const avgSat = cellSats.reduce((a, b) => a + b, 0) / cellSats.length;
+  const saturationScore = Math.max(0, Math.min(1, (avgSat - 0.10) / 0.30));
+
+  return (
+    borderDarkScore * 0.30 +
+    contrastScore   * 0.25 +
+    colorVariance   * 0.25 +
+    saturationScore * 0.20
+  );
 }
 
 /**
